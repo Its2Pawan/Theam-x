@@ -1291,10 +1291,14 @@ tx_help() {
   cat <<EOF
 ${TX_CA}Small AI Assistant (/ai)${TX_CX}
   /ai                         Setup wizard (first run) or interactive AI chat
-  /ai <prompt>                Ask AI directly (also supports piped stdin)
-  /ai -c <task>               Generate a shell command (asks before running)
+  /ai <prompt>                Ask AI directly (supports piped stdin)
+  /ai -c <task>               Generate one shell command & confirm before running
+  /ai do <task>               Interactive AI command runner (runs & auto-fixes errors)
+  /ai code <file> [question]  Analyze/review a code file for bugs & improvements
+  /ai fix <file> [issue]      Find bugs in file & optionally apply fix (.bak saved)
+  /ai explain <file|cmd>      Explain a code file or shell command
   /ai config | status | test  Configure base_url / api_key / model / type / etcs
-  /ai set <key> <value>       Set type, base_url, api_key, model, system, temp, max_tokens
+  /ai set <key> <value>       Set: type, base_url, api_key, model, system, temp, max_tokens
 
 ${TX_CA}Theme & Visuals${TX_CX}
   txtheme [name|prompt|rain]  Switch colors, prompt style, rain, boot, banner, update
@@ -2054,9 +2058,9 @@ _tx_ai_load() {
   TX_AI_BASE_URL=""
   TX_AI_API_KEY=""
   TX_AI_MODEL=""
-  TX_AI_SYSTEM="You are a concise, accurate Linux VPS and Termux terminal assistant."
+  TX_AI_SYSTEM="You are a practical Linux VPS and Termux terminal assistant (${TX_DEVICE}). Give direct, complete, ready-to-run commands and concise code fixes without unnecessary clarifying questions."
   TX_AI_TEMP="0.7"
-  TX_AI_MAX_TOKENS="1024"
+  TX_AI_MAX_TOKENS="4096"
   TX_AI_TIMEOUT="45"
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
@@ -2118,7 +2122,7 @@ _tx_ai_status() {
   printf '%sAPI Key    :%s %s\n' "$TX_CA" "$TX_CX" "$(_tx_ai_mask_key "${TX_AI_API_KEY:-}")"
   printf '%sModel      :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MODEL:-unset}"
   printf '%sTemp       :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_TEMP:-0.7}"
-  printf '%sMax Tokens :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MAX_TOKENS:-1024}"
+  printf '%sMax Tokens :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MAX_TOKENS:-4096}"
   printf '%sTimeout    :%s %ss\n' "$TX_CA" "$TX_CX" "${TX_AI_TIMEOUT:-45}"
   printf '%sSystem     :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_SYSTEM:-}"
   printf '%sFile       :%s %s\n\n' "$TX_CA" "$TX_CX" "$TX_HOME/ai.conf"
@@ -2302,9 +2306,9 @@ PY
 
   # Pure-awk JSON string fallback (for minimal VPS/Termux without python3 or jq)
   awk -v ptype="$ptype" '
-    BEGIN { RS=""; ORS="" }
-    {
-      s = $0
+    { buf = buf $0 "\n" }
+    END {
+      s = buf
       key = (ptype == "gemini" || ptype == "anthropic") ? "\"text\"" : "\"content\""
       if (index(s, "\"error\"") > 0 && index(s, key) == 0) {
         key = "\"message\""
@@ -2340,10 +2344,78 @@ PY
   ' "$resp_file"
 }
 
+_tx_ai_render() {
+  # Lightweight colored markdown renderer for terminal readability
+  local in_code=0 line
+  while IFS= read -r line; do
+    if [[ "$line" == \`\`\`* ]]; then
+      if (( in_code )); then
+        in_code=0
+        printf '%s  └────────────────────────────────────────%s\n' "$TX_CD" "$TX_CX"
+      else
+        in_code=1
+        local lang="${line#\`\`\`}"
+        printf '%s  ┌─ %s%s\n' "$TX_CD" "${lang:-code}" "$TX_CX"
+      fi
+      continue
+    fi
+    if (( in_code )); then
+      printf '%s  │ %s%s%s\n' "$TX_CD" "$TX_CW" "$line" "$TX_CX"
+    elif [[ "$line" == \#\#\#* || "$line" == \#\#* || "$line" == \#* ]]; then
+      local hdr="${line#\#}"; hdr="${hdr#\#}"; hdr="${hdr#\#}"; hdr="${hdr# }"
+      printf '%s%s%s\n' "$TX_CA" "$hdr" "$TX_CX"
+    else
+      line="${line//\*\*/}"
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
+_tx_ai_extract_cmds() {
+  # Extracts runnable lines from ```bash/sh/``` code blocks in stdin
+  awk '
+    /^```/ {
+      if (!in_blk) {
+        lang = substr($0, 4)
+        gsub(/[[:space:]]+/, "", lang)
+        if (lang == "" || lang == "bash" || lang == "sh" || lang == "zsh" || lang == "shell") {
+          in_blk = 1
+        }
+      } else {
+        in_blk = 0
+      }
+      next
+    }
+    in_blk && $0 !~ /^[[:space:]]*(#|$)/ {
+      sub(/^[[:space:]]*\$[[:space:]]*/, "")
+      print
+    }
+  '
+}
+
+_tx_ai_extract_code_block() {
+  # Extracts the first (or largest) code block content from stdin
+  awk '
+    /^```/ {
+      if (!in_blk) { in_blk = 1; cur = "" }
+      else {
+        in_blk = 0
+        if (length(cur) > length(best)) best = cur
+      }
+      next
+    }
+    in_blk { cur = cur $0 "\n" }
+    END { printf "%s", best }
+  '
+}
+
 _tx_ai_call() {
-  # args: system_override(or empty), user_msg, [hist_pairs...]
+  # args: system_override(or empty), role/msg pairs...
   local sys_ovr="$1"; shift
   local sys="${sys_ovr:-$TX_AI_SYSTEM}"
+  if [[ -z $sys_ovr ]]; then
+    sys="${sys} [Env: device=${TX_DEVICE}, os=${OSNAME:-$(uname -s 2>/dev/null || echo Linux)}, shell=bash, cwd=${PWD}]"
+  fi
   local -a msgs=("$@")
   local tmp="$TX_HOME/.aitmp.$$"
   ( umask 077 && mkdir -p "$tmp" ) || { _tx_err "cannot create temp dir"; return 1; }
@@ -2352,8 +2424,12 @@ _tx_ai_call() {
   local esys endpoint="" hdr_file="$tmp/curl.cfg" body_file="$tmp/body.json" resp_file="$tmp/resp.json"
   esys=$(printf '%s' "$sys" | _tx_json_escape)
   local temp_num="${TX_AI_TEMP:-0.7}"
-  local tok_num="${TX_AI_MAX_TOKENS:-1024}"
-  _tx_is_int "$tok_num" || tok_num=1024
+  local tok_num="${TX_AI_MAX_TOKENS:-4096}"
+  _tx_is_int "$tok_num" || tok_num=4096
+  # Prevent Gemini 2.5 thinking tokens from truncating short replies
+  if [[ "$TX_AI_TYPE" == "gemini" && "$tok_num" -lt 4096 ]]; then
+    tok_num=4096
+  fi
 
   local i role emsg msg_json=""
   case "$TX_AI_TYPE" in
@@ -2495,11 +2571,147 @@ _tx_ai_cmd_helper() {
   fi
 }
 
+_tx_ai_run_interactive_cmd() {
+  local cmd="$1"
+  [[ -n $cmd ]] || return 1
+  printf '%s[command]%s %s\n' "$TX_CA" "$TX_CX" "$cmd"
+  [[ -t 0 && -t 1 ]] || return 0
+  printf '%sAction: [y] Run  [e] Edit  [n] Skip : %s' "$TX_CY" "$TX_CX"
+  local ans=""
+  read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+  echo
+  if [[ "$ans" == e || "$ans" == E ]]; then
+    printf '%sEdit cmd: %s' "$TX_CA" "$TX_CX"
+    read -r -e -i "$cmd" cmd </dev/tty 2>/dev/null || read -r cmd </dev/tty
+    ans="y"
+  fi
+  if [[ "$ans" == y || "$ans" == Y ]]; then
+    local logf="$TX_HOME/.airun.$$" ec=0
+    eval "$cmd" 2>&1 | tee "$logf"
+    ec=${PIPESTATUS[0]}
+    if (( ec != 0 )); then
+      _tx_warn "command exited with code ${ec}"
+      printf '%sAsk /ai to fix this error? [Y/n] %s' "$TX_CY" "$TX_CX"
+      local fix_ans=""
+      read -r -n 1 fix_ans </dev/tty 2>/dev/null || fix_ans="n"
+      echo
+      if [[ "$fix_ans" != n && "$fix_ans" != N ]]; then
+        local err_tail
+        err_tail=$(tail -n 30 "$logf" 2>/dev/null || true)
+        rm -f "$logf"
+        _tx_ai_do "Fix this failed command: ${cmd}\nExit code: ${ec}\nOutput:\n${err_tail}"
+        return $?
+      fi
+    fi
+    rm -f "$logf"
+    return "$ec"
+  fi
+  return 0
+}
+
+_tx_ai_do() {
+  local task="$*"
+  [[ -n $task ]] || { _tx_err "usage: /ai do <task>"; return 1; }
+  local sys="You are an expert ${TX_DEVICE} (${OSNAME:-Linux}) shell assistant. Reply with a brief 1-line explanation followed by a \`\`\`bash code block containing the exact safe runnable command(s) for ${TX_DEVICE} (no placeholders if avoidable)."
+  local reply
+  reply=$(_tx_ai_call "$sys" "user" "$task") || return 1
+  printf '%s\n' "$reply" | _tx_ai_render
+  local -a cmds=()
+  local c
+  while IFS= read -r c; do
+    [[ -n $c ]] && cmds+=("$c")
+  done < <(printf '%s\n' "$reply" | _tx_ai_extract_cmds)
+  (( ${#cmds[@]} == 0 )) && return 0
+  if (( ${#cmds[@]} == 1 )); then
+    _tx_ai_run_interactive_cmd "${cmds[0]}"
+  else
+    local combined=""
+    printf -v combined '%s\n' "${cmds[@]}"
+    combined="${combined%$'\n'}"
+    local i
+    echo
+    for ((i=0; i<${#cmds[@]}; i++)); do
+      printf '  %s[%d]%s %s\n' "$TX_CA" $((i+1)) "$TX_CX" "${cmds[i]}"
+    done
+    printf '  %s[a]%s Run all in sequence\n' "$TX_CA" "$TX_CX"
+    printf '%sPick [1-%d/a/n]: %s' "$TX_CY" "${#cmds[@]}" "$TX_CX"
+    local pick=""
+    read -r pick </dev/tty 2>/dev/null || pick="n"
+    if [[ "$pick" == "a" || "$pick" == "A" ]]; then
+      _tx_ai_run_interactive_cmd "$combined"
+    elif _tx_is_int "$pick" && (( pick >= 1 && pick <= ${#cmds[@]} )); then
+      _tx_ai_run_interactive_cmd "${cmds[pick-1]}"
+    fi
+  fi
+}
+
+_tx_ai_read_file_ctx() {
+  local f="$1"
+  [[ -f $f ]] || { _tx_err "file not found: $f"; return 1; }
+  if grep -qI '' "$f" 2>/dev/null || [[ ! -s "$f" ]]; then
+    nl -ba "$f" 2>/dev/null | head -c 24576
+  else
+    _tx_err "binary file cannot be analyzed: $f"
+    return 1
+  fi
+}
+
+_tx_ai_code() {
+  local f="${1:-}"
+  [[ -n $f ]] || { _tx_err "usage: /ai code <file> [question]"; return 1; }
+  shift
+  local q="${*:-Analyze this code: explain what it does, spot any bugs, security issues, or improvements.}"
+  local content
+  content=$(_tx_ai_read_file_ctx "$f") || return 1
+  local reply
+  reply=$(_tx_ai_call "" "user" "File: ${f}"$'\n'"Task: ${q}"$'\n\n'"Code (with line numbers):"$'\n'"\`\`\`"$'\n'"${content}"$'\n'"\`\`\`") || return 1
+  printf '%s\n' "$reply" | _tx_ai_render
+}
+
+_tx_ai_fix() {
+  local f="${1:-}"
+  [[ -n $f ]] || { _tx_err "usage: /ai fix <file> [error_or_goal]"; return 1; }
+  shift
+  local issue="${*:-Find and fix all bugs or errors in this file.}"
+  local content
+  content=$(_tx_ai_read_file_ctx "$f") || return 1
+  local sys="You are a senior developer fixing ${f}. First list the bugs concisely, then provide the COMPLETE corrected file inside a single \`\`\` code block."
+  local reply
+  reply=$(_tx_ai_call "$sys" "user" "File: ${f}"$'\n'"Issue: ${issue}"$'\n\n'"Current code:"$'\n'"\`\`\`"$'\n'"${content}"$'\n'"\`\`\`") || return 1
+  printf '%s\n' "$reply" | _tx_ai_render
+
+  local fixed
+  fixed=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+  if [[ -n $fixed && -t 0 && -t 1 ]]; then
+    printf '\n%sSave fix to %s (creates %s.bak)? [y/N] %s' "$TX_CY" "$f" "$f" "$TX_CX"
+    local ans=""
+    read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+    echo
+    if [[ "$ans" == y || "$ans" == Y ]]; then
+      cp -p -- "$f" "${f}.bak" && printf '%s' "$fixed" > "$f"
+      _tx_say "updated ${f} (backup saved: ${f}.bak)"
+    fi
+  fi
+}
+
+_tx_ai_explain() {
+  local target="${*:-}"
+  [[ -n $target ]] || { _tx_err "usage: /ai explain <file | command>"; return 1; }
+  if [[ -f "$target" ]]; then
+    _tx_ai_code "$target" "Explain clearly how this file works, section by section."
+  else
+    local reply
+    reply=$(_tx_ai_call "" "user" "Explain this command/snippet clearly and mention any risks: ${target}") || return 1
+    printf '%s\n' "$reply" | _tx_ai_render
+  fi
+}
+
 _tx_ai_chat() {
   printf '\n%s=== /ai CHAT (%s | %s) ===%s\n' "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "$TX_CX"
-  printf '%sCommands: /help  /clear  /model <m>  /config  /status  /exit%s\n\n' "$TX_CD" "$TX_CX"
+  printf '%sCommands: /help  /run  /code <file>  /clear  /model <m>  /config  /status  /exit%s\n\n' "$TX_CD" "$TX_CX"
   local -a hist=()
-  local line reply
+  local -a last_cmds=()
+  local line reply c
   while true; do
     printf '%syou > %s' "$TX_C2" "$TX_CX"
     IFS= read -r line || { echo; break; }
@@ -2507,7 +2719,7 @@ _tx_ai_chat() {
     case "$line" in
       /exit|/quit|exit|quit|q) break ;;
       /clear)
-        hist=()
+        hist=(); last_cmds=()
         _tx_say "chat history cleared"
         continue
         ;;
@@ -2525,7 +2737,33 @@ _tx_ai_chat() {
         _tx_ai_save && _tx_say "model -> $TX_AI_MODEL"
         continue
         ;;
+      /code\ *)
+        local cf="${line#/code }"
+        _tx_ai_code "$cf"
+        continue
+        ;;
+      /run)
+        if (( ${#last_cmds[@]} == 0 )); then
+          _tx_warn "no shell commands found in last AI reply"
+        elif (( ${#last_cmds[@]} == 1 )); then
+          _tx_ai_run_interactive_cmd "${last_cmds[0]}"
+        else
+          local i
+          for ((i=0; i<${#last_cmds[@]}; i++)); do
+            printf '  %s[%d]%s %s\n' "$TX_CA" $((i+1)) "$TX_CX" "${last_cmds[i]}"
+          done
+          printf '%sPick [1-%d]: %s' "$TX_CY" "${#last_cmds[@]}" "$TX_CX"
+          local pk=""
+          read -r pk </dev/tty 2>/dev/null || pk=""
+          if _tx_is_int "$pk" && (( pk >= 1 && pk <= ${#last_cmds[@]} )); then
+            _tx_ai_run_interactive_cmd "${last_cmds[pk-1]}"
+          fi
+        fi
+        continue
+        ;;
       /help)
+        echo "  /run           run command(s) from the last AI reply"
+        echo "  /code <file>   analyze a code file"
         echo "  /clear         clear conversation history"
         echo "  /model <name>  switch model"
         echo "  /config        re-run setup wizard"
@@ -2540,7 +2778,14 @@ _tx_ai_chat() {
     fi
     reply=$(_tx_ai_call "" "${hist[@]}") || continue
     hist+=("assistant" "$reply")
-    printf '\n%sai >%s %s\n\n' "$TX_CA" "$TX_CX" "$reply"
+    last_cmds=()
+    while IFS= read -r c; do
+      [[ -n $c ]] && last_cmds+=("$c")
+    done < <(printf '%s\n' "$reply" | _tx_ai_extract_cmds)
+    printf '\n%sai >%s\n' "$TX_CA" "$TX_CX"
+    printf '%s\n' "$reply" | _tx_ai_render
+    (( ${#last_cmds[@]} > 0 )) && printf '%s[tip: type /run to execute suggested command(s)]%s\n' "$TX_CD" "$TX_CX"
+    echo
   done
 }
 
@@ -2553,7 +2798,11 @@ tx_ai() {
 Usage: /ai [option | prompt]
   /ai                         First-time setup wizard, or interactive AI chat
   /ai <prompt>                One-shot question (also accepts piped stdin)
-  /ai -c <task>               Generate a shell command and prompt before running
+  /ai -c <task>               Generate one shell command and prompt before running
+  /ai do <task>               AI command runner (execute & auto-fix on error)
+  /ai code <file> [question]  Analyze/review a code file for bugs & improvements
+  /ai fix <file> [issue]      Analyze bugs & optionally apply fix (.bak saved)
+  /ai explain <file|cmd>      Explain a code file or shell command
   /ai config | setup          Configure type, base_url, api_key, model, temp, tokens, system
   /ai set <key> <value>       Set: type | base_url | api_key | model | system | temp | max_tokens | timeout
   /ai status | show           Show active AI settings (API key masked)
@@ -2617,11 +2866,33 @@ EOF
     piped=$(head -c 16384 2>/dev/null || true)
   fi
 
-  if [[ "$sub" == "-c" || "$sub" == "--cmd" || "$sub" == "cmd" ]]; then
-    shift
-    _tx_ai_cmd_helper "$*"
-    return $?
-  fi
+  case "$sub" in
+    -c|--cmd|cmd)
+      shift
+      _tx_ai_cmd_helper "$*"
+      return $?
+      ;;
+    do|run|-x)
+      shift
+      _tx_ai_do "$*"
+      return $?
+      ;;
+    code|check|review|analyze|-f)
+      shift
+      _tx_ai_code "$@"
+      return $?
+      ;;
+    fix)
+      shift
+      _tx_ai_fix "$@"
+      return $?
+      ;;
+    explain)
+      shift
+      _tx_ai_explain "$@"
+      return $?
+      ;;
+  esac
 
   local prompt="$*"
   if [[ -n $piped ]]; then
@@ -2635,7 +2906,7 @@ EOF
   if [[ -n $prompt ]]; then
     local ans
     ans=$(_tx_ai_call "" "user" "$prompt") || return 1
-    printf '%s\n' "$ans"
+    printf '%s\n' "$ans" | _tx_ai_render
   else
     _tx_ai_chat
   fi
@@ -2797,7 +3068,7 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="config setup status show test set reset -c cmd --help"
+        words="do run code check review fix explain config setup status show test set reset -c cmd --help"
       elif [[ "$prev" == set ]]; then
         words="type base_url api_key model system temp max_tokens timeout"
       elif [[ "$prev" == type ]]; then

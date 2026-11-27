@@ -13,7 +13,7 @@
 **Hacker-style terminal theme, system toolkit & built-in `/ai` assistant for VPS and Termux**
 7 color themes · 4 prompt styles · 3 matrix rain modes · `/ai` chat & command helper · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-2.2.0-brightgreen)
+![version](https://img.shields.io/badge/version-2.3.0-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
@@ -70,15 +70,15 @@ On your first run of `/ai`, Theam-X asks you to configure:
 
 ```bash
 /ai                              # First-time setup wizard, or interactive chat
-/ai explain why nginx failed     # One-shot question
+/ai install cloudflare in termux # One-shot answer (formatted for terminal)
 cat error.log | /ai summarize    # Pipe logs directly to AI
 /ai -c find files larger than 100M  # Generate command and confirm before running
+/ai do install cloudflared       # Interactive command runner (auto-fixes errors!)
+/ai code app.py                  # Analyze code file for bugs & improvements
+/ai fix script.sh                # Fix bugs in file (creates .bak backup)
+/ai explain nginx.conf           # Explain any code file or command
 /ai config                       # Re-run setup wizard
 /ai status | /ai test | /ai reset
-/ai set type openai
-/ai set base_url https://api.groq.com/openai/v1
-/ai set api_key gsk_...
-/ai set model llama-3.3-70b-versatile
 ```
 
 ## Commands
