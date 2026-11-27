@@ -2,6 +2,7 @@
 # =====================================================================
 #  THEAM-X  |  hacker terminal theme for VPS + Termux
 #  by Its2Pawan  -  https://github.com/Its2Pawan/Theam-x
+#  Site: https://its2pawan.us.ci
 #  Copyright (c) 2026 Its2Pawan. All Rights Reserved.
 # =====================================================================
 
@@ -21,7 +22,7 @@ TX_DEV_TAG="${TX_DEV_TAG:-Discord Bots | Minecraft Plugins | Game Servers}"
 TX_DEV_GITHUB="${TX_DEV_GITHUB:-https://github.com/Its2Pawan}"
 TX_DEV_REPO="${TX_DEV_REPO:-https://github.com/Its2Pawan/Theam-x}"
 TX_DEV_DISCORD="${TX_DEV_DISCORD:-}"
-TX_DEV_SITE="${TX_DEV_SITE:-}"
+TX_DEV_SITE="${TX_DEV_SITE:-https://its2pawan.us.ci}"
 
 if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == *com.termux* ]]; then
   TX_DEVICE=termux; HV_DISK_PATH="$HOME"; : "${HV_SERVICES_STR:=}"
@@ -440,8 +441,8 @@ hv_build_dev() {
   hv_kv GITHUB  "$TX_DEV_GITHUB"
   hv_kv REPO    "$TX_DEV_REPO"
   hv_kv PROJECT "Theam-X v$(tx_local_ver)"
-  hv_kv DISCORD "$TX_DEV_DISCORD"
   hv_kv SITE    "$TX_DEV_SITE"
+  hv_kv DISCORD "$TX_DEV_DISCORD"
   LINES+=("__SEP__")
   hv_kv DEVICE  "$TX_DEVICE"
   hv_kv SHELL   "$SHELLNAME"
@@ -707,7 +708,7 @@ tx_update_prompt() {
 }
 
 # =====================================================================
-#  AUTOCOMPLETE — files, dirs, commands, ~ and $HOME expansion
+#  AUTOCOMPLETE
 # =====================================================================
 _tx_expand_cur() {
   local c="$1"
@@ -760,7 +761,6 @@ _tx_path_complete() {
   fi
   shopt -u nullglob dotglob 2>/dev/null
 
-  # Re-prefix with ~ if the user typed ~
   local -a out=()
   local c
   for c in "${cands[@]}"; do
@@ -837,9 +837,6 @@ _tx_theamx_complete() {
   COMPREPLY=("${matches[@]}")
 }
 
-# force-register every completion. Called on each prompt so bash-completion
-# (sourced from /usr/share/bash-completion/bash_completion in ~/.bashrc)
-# can never overwrite our cd/path completers.
 _tx_register_complete() {
   complete -o bashdefault -o default -F _tx_cd_complete cd pushd 2>/dev/null
   complete -o bashdefault -o default -F _tx_path_complete \
