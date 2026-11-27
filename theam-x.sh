@@ -604,7 +604,6 @@ tx_remote_ver() {
   return 1
 }
 
-# verbose interactive install
 tx_install() {
   local lv rv rb base tmp
   lv=$(tx_local_ver)
@@ -627,7 +626,6 @@ tx_install() {
   return 1
 }
 
-# silent install (background)
 tx_install_quiet() {
   local lv rv rb base tmp
   lv=$(tx_local_ver)
@@ -641,7 +639,7 @@ tx_install_quiet() {
     mv -f "$tmp/theam-x.sh" "$TX_HOME/theam-x.sh"
     printf '%s\n' "$rv" > "$TX_HOME/ver.txt"
     rm -rf "$tmp"
-    printf 'Theam-X updated v%s -> v%s (active in new shells)\n' "$lv" "$rv" > "$TX_HOME/notice"
+    printf 'Theam-X updated v%s -> v%s\n' "$lv" "$rv" > "$TX_HOME/notice"
     return 0
   fi
   rm -rf "$tmp"
@@ -708,6 +706,112 @@ tx_update_prompt() {
   esac
 }
 
+# =====================================================================
+#  AUTOCOMPLETE  (files, dirs, and Theam-X commands)
+# =====================================================================
+
+# Shared file/dir word list — this is what powers `cd p<TAB>` -> `panel`
+_tx_path_complete() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  local dir="" base="" path
+  # If user typed "some/dir/pr", split into dir="some/dir/" base="pr"
+  if [[ "$cur" == */* ]]; then
+    dir="${cur%/*}/"
+    base="${cur##*/}"
+  else
+    dir=""
+    base="$cur"
+  fi
+  # Build candidates relative to $dir
+  local -a cands=()
+  local entry name
+  shopt -s nullglob dotglob 2>/dev/null
+  for entry in "$dir"*; do
+    name="${entry##*/}"
+    if [[ -z "$base" || "$name" == "$base"* ]]; then
+      cands+=("$entry")
+    fi
+  done
+  shopt -u nullglob dotglob 2>/dev/null
+  # If nothing matched literally, try case-insensitive
+  if (( ${#cands[@]} == 0 )) && [[ -n "$base" ]]; then
+    shopt -s nullglob dotglob nocaseglob 2>/dev/null
+    for entry in "$dir"*; do
+      name="${entry##*/}"
+      if [[ "${name,,}" == "${base,,}"* ]]; then
+        cands+=("$entry")
+      fi
+    done
+    shopt -u nullglob dotglob nocaseglob 2>/dev/null
+  fi
+  # Append / to directories, add space after files
+  local -a out=()
+  local c
+  for c in "${cands[@]}"; do
+    if [[ -d "$c" ]]; then
+      out+=("$c/")
+    else
+      out+=("$c")
+    fi
+  done
+  COMPREPLY=("${out[@]}")
+}
+
+# cd -> only dirs
+_tx_cd_complete() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  local dir="" base=""
+  if [[ "$cur" == */* ]]; then
+    dir="${cur%/*}/"; base="${cur##*/}"
+  else
+    base="$cur"
+  fi
+  local -a cands=()
+  local entry name
+  shopt -s nullglob dotglob 2>/dev/null
+  for entry in "$dir"*; do
+    [[ -d "$entry" ]] || continue
+    name="${entry##*/}"
+    if [[ -z "$base" || "$name" == "$base"* ]]; then
+      cands+=("$entry/")
+    fi
+  done
+  if (( ${#cands[@]} == 0 )) && [[ -n "$base" ]]; then
+    shopt -s nullglob dotglob nocaseglob 2>/dev/null
+    for entry in "$dir"*; do
+      [[ -d "$entry" ]] || continue
+      name="${entry##*/}"
+      [[ "${name,,}" == "${base,,}"* ]] && cands+=("$entry/")
+    done
+    shopt -u nullglob dotglob nocaseglob 2>/dev/null
+  fi
+  shopt -u nullglob dotglob 2>/dev/null
+  COMPREPLY=("${cands[@]}")
+}
+
+# generic command -> file/dir
+_tx_generic_complete() {
+  _tx_path_complete
+}
+
+# completion for all common commands the theme users touch
+complete -o bashdefault -o default -F _tx_cd_complete cd pushd 2>/dev/null
+complete -o bashdefault -o default -F _tx_path_complete ls cat less more head tail cp mv rm mkdir rmdir touch chmod chown ln vim nano vi nvim 2>/dev/null
+complete -o bashdefault -o default -F _tx_path_complete find grep rg tar zip unzip 2>/dev/null
+complete -o bashdefault -o default -F _tx_path_complete scp rsync ssh python python3 node npm 2>/dev/null
+
+# Theam-X commands completion (each only when the shell is Theam-X'd)
+_tx_theamx_complete() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  local cmds="sfetch Sfetch dev hv hvboot matrix txver txupdate"
+  local matches=()
+  local c
+  for c in $cmds; do
+    [[ "$c" == "$cur"* ]] && matches+=("$c")
+  done
+  COMPREPLY=("${matches[@]}")
+}
+
 # ---------------------------------------------------------------------
 #  commands
 # ---------------------------------------------------------------------
@@ -764,6 +868,8 @@ if (return 0 2>/dev/null); then
         tx_update_prompt
       fi
     fi
+    # command completion for Theam-X commands themselves
+    complete -o bashdefault -o default -F _tx_theamx_complete sfetch Sfetch dev hv hvboot matrix txver txupdate 2>/dev/null
   fi
 else
   case "${1:-sfetch}" in
