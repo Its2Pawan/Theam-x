@@ -117,10 +117,11 @@ BANNER
   if [[ ! -f "$DEST/config" ]]; then
     {
       echo "# Theam-X config  (edit via: txtheme / txconfig)"
-      echo 'TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple'
+      echo 'TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple | neon'
       echo 'TX_PROMPT="hacker"         # hacker | minimal | power | compact'
       echo 'TX_RAIN="binary"           # binary | hex | glyph'
       echo 'TX_BOOT=1                  # 1 = boot animation on login, 0 = skip'
+      echo 'TX_BANNER=1                # 1 = compact status line on login, 0 = hide'
       echo 'TX_AUTOUPDATE=1            # 0 = never auto update'
       echo 'TX_CHECK_INTERVAL=86400    # seconds between update checks'
       echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
@@ -158,9 +159,9 @@ BANNER
   say "installed Theam-X v$(head -n1 "$DEST/ver.txt" | tr -d '[:space:]')"
   echo
   printf '%s\n' "${D}  Run now :${X}  source ~/.bashrc"
-  printf '%s\n' "${D}  Menu    :${X}  theamx  |  txtheme (switch colors/prompt/rain)"
+  printf '%s\n' "${D}  Menu/AI :${X}  theamx  |  /ai (config + chat)  |  txtheme"
   printf '%s\n' "${D}  Panels  :${X}  sfetch [-q] | hv | matrix | hvboot | dev"
-  printf '%s\n' "${D}  Tools   :${X}  myip | ports | netinfo | pingtest | dns | diskinfo | proctop | svc | txdiag"
+  printf '%s\n' "${D}  Tools   :${X}  txcpu | txmem | txtemp | txlog | txssh | myip | ports | txdiag"
   printf '%s\n' "${D}  Auto-update is ON (checks GitHub once a day). Turn off: txtheme autoupdate off${X}"
   echo
 }

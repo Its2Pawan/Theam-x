@@ -20,6 +20,7 @@ TX_THEME="${TX_THEME:-matrix}"
 TX_PROMPT="${TX_PROMPT:-hacker}"
 TX_RAIN="${TX_RAIN:-binary}"
 TX_BOOT="${TX_BOOT:-1}"
+TX_BANNER="${TX_BANNER:-1}"
 TX_AUTOUPDATE="${TX_AUTOUPDATE:-1}"
 TX_CHECK_INTERVAL="${TX_CHECK_INTERVAL:-86400}"
 HV_COOLDOWN="${HV_COOLDOWN:-300}"
@@ -46,7 +47,7 @@ read -ra HV_SERVICES <<< "$HV_SERVICES_STR"
 # ---------------------------------------------------------------------
 #  theme palette & helpers
 # ---------------------------------------------------------------------
-TX_THEMES=(matrix cyber crimson amber ice purple)
+TX_THEMES=(matrix cyber crimson amber ice purple neon)
 TX_PROMPTS=(hacker minimal power compact)
 TX_RAINS=(binary hex glyph)
 
@@ -115,6 +116,10 @@ tx_apply_palette() {
     purple)
       G="${E}[0;40;35m"; DIM="${E}[2;40;35m"; BR="${E}[1;40;95m"; C="${E}[1;40;96m"
       TX_C1="${E}[0;35m"; TX_C2="${E}[1;95m"; TX_CD="${E}[2;35m"; TX_CA="${E}[1;96m"
+      ;;
+    neon)
+      G="${E}[0;40;92m"; DIM="${E}[2;40;32m"; BR="${E}[1;40;95m"; C="${E}[1;40;93m"
+      TX_C1="${E}[0;92m"; TX_C2="${E}[1;95m"; TX_CD="${E}[2;32m"; TX_CA="${E}[1;93m"
       ;;
   esac
 }
@@ -413,6 +418,26 @@ hv_battery_sysfs() {
   return 1
 }
 
+hv_temp_sysfs() {
+  local f raw val deg_u="C"
+  _tx_is_utf8 && deg_u="°C"
+  for f in /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp1_input; do
+    [[ -r "$f" ]] || continue
+    read -r raw < "$f" 2>/dev/null || continue
+    _tx_is_int "${raw#-}" || continue
+    if (( raw > 1000 )); then
+      val=$(( raw / 1000 ))
+    else
+      val=$raw
+    fi
+    if (( val > 0 && val < 150 )); then
+      printf '%d%s' "$val" "$deg_u"
+      return 0
+    fi
+  done
+  return 1
+}
+
 hv_stats_static() {
   HOST=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo "localhost")
   HOST=$(_tx_strip_ctrl "$HOST")
@@ -464,6 +489,7 @@ hv_stats_static() {
   CPU=0; PREV_TOTAL=0; PREV_IDLE=0; PREV_RX=0; PREV_TX=0; PREV_T=$SECONDS
   RX_TXT="0KB/s"; TX_TXT="0KB/s"; NUSERS=0; HAS_SYSTEMD=0; HAS_OPENRC=0
   BAT_TXT=$(hv_battery_sysfs 2>/dev/null || echo "")
+  TEMP_TXT=$(hv_temp_sysfs 2>/dev/null || echo "")
 }
 
 hv_stats_fast() {
@@ -599,6 +625,7 @@ hv_stats_slow() {
   NUSERS=$(who 2>/dev/null | wc -l | tr -d ' ')
   _tx_is_int "$NUSERS" || NUSERS=0
   BAT_TXT=$(hv_battery_sysfs 2>/dev/null || echo "")
+  TEMP_TXT=$(hv_temp_sysfs 2>/dev/null || echo "")
 }
 
 # ---------------------------------------------------------------------
@@ -667,7 +694,8 @@ hv_build_dash() {
   hv_barline DISK "$DISK_PCT" "$DISK_TXT"
   hv_kv LOAD "$L1  $L2  $L3"
   hv_kv NET  "$net_str" "${#net_str}"
-  [[ -n $BAT_TXT ]] && hv_kv BATTERY "$BAT_TXT"
+  [[ -n $TEMP_TXT ]] && hv_kv TEMP    "$TEMP_TXT"
+  [[ -n $BAT_TXT ]]  && hv_kv BATTERY "$BAT_TXT"
   LINES+=("__SEP__")
   hv_svc_lines
   LINES+=("__SEP__")
@@ -695,7 +723,8 @@ hv_build_sfetch() {
   hv_kv SWAP   "$SWAP_TXT"
   hv_kv DISK   "$DISK_TXT ($DISK_PCT%)"
   hv_kv IP     "$IPADDR"
-  [[ -n $BAT_TXT ]] && hv_kv BATTERY "$BAT_TXT"
+  [[ -n $TEMP_TXT ]] && hv_kv TEMP    "$TEMP_TXT"
+  [[ -n $BAT_TXT ]]  && hv_kv BATTERY "$BAT_TXT"
   LINES+=("__SEP__")
   hv_kv THEME  "Theam-X v$(tx_local_ver) (${TX_THEME})"
   LINES+=("__SEP__")
@@ -731,7 +760,8 @@ hv_sfetch_cli() {
     "${TX_CA}IP     ${TX_CX}: ${IPADDR}"
     "${TX_CA}Theme  ${TX_CX}: ${TX_THEME} / ${TX_PROMPT} (${TX_DEVICE})"
   )
-  [[ -n $BAT_TXT ]] && info+=("${TX_CA}Power  ${TX_CX}: ${BAT_TXT}")
+  [[ -n $TEMP_TXT ]] && info+=("${TX_CA}Temp   ${TX_CX}: ${TEMP_TXT}")
+  [[ -n $BAT_TXT ]]  && info+=("${TX_CA}Power  ${TX_CX}: ${BAT_TXT}")
   echo
   local i max=${#info[@]}
   (( ${#logo[@]} > max )) && max=${#logo[@]}
@@ -1040,10 +1070,11 @@ _tx_config_init() {
   if [[ ! -f "$TX_HOME/config" ]]; then
     {
       echo "# Theam-X config  (edit via: txtheme / txconfig)"
-      echo 'TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple'
+      echo 'TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple | neon'
       echo 'TX_PROMPT="hacker"         # hacker | minimal | power | compact'
       echo 'TX_RAIN="binary"           # binary | hex | glyph'
       echo 'TX_BOOT=1                  # 1 = boot animation on login, 0 = skip'
+      echo 'TX_BANNER=1                # 1 = compact status line on login, 0 = hide'
       echo 'TX_AUTOUPDATE=1            # 0 = never auto update'
       echo 'TX_CHECK_INTERVAL=86400    # seconds between update checks'
       echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
@@ -1083,10 +1114,11 @@ tx_theme() {
 Usage: txtheme [option]
   txtheme                         interactive theme & options menu
   txtheme list                    list all themes, prompts, and rain styles
-  txtheme <theme>                 matrix | cyber | crimson | amber | ice | purple
+  txtheme <theme>                 matrix | cyber | crimson | amber | ice | purple | neon
   txtheme prompt <style>          hacker | minimal | power | compact
   txtheme rain <mode>             binary | hex | glyph
   txtheme boot <on|off>           enable/disable login boot animation
+  txtheme banner <on|off>         enable/disable login status banner
   txtheme autoupdate <on|off>     enable/disable daily update prompt
 EOF
       return 0
@@ -1096,6 +1128,7 @@ EOF
       printf '%sPrompt styles%s: %s  (active: %s%s%s)\n' "$TX_CA" "$TX_CX" "${TX_PROMPTS[*]}" "$TX_C2" "$TX_PROMPT" "$TX_CX"
       printf '%sRain modes%s   : %s  (active: %s%s%s)\n' "$TX_CA" "$TX_CX" "${TX_RAINS[*]}" "$TX_C2" "$TX_RAIN" "$TX_CX"
       printf '%sBoot screen%s  : %s\n' "$TX_CA" "$TX_CX" "$([[ $TX_BOOT == 1 && ${HV_QUICK:-0} != 1 ]] && echo on || echo off)"
+      printf '%sLogin banner%s : %s\n' "$TX_CA" "$TX_CX" "$([[ ${TX_BANNER:-1} == 1 ]] && echo on || echo off)"
       printf '%sAuto-update%s  : %s\n' "$TX_CA" "$TX_CX" "$([[ $TX_AUTOUPDATE == 1 ]] && echo on || echo off)"
       return 0
       ;;
@@ -1121,6 +1154,14 @@ EOF
       esac
       return 0
       ;;
+    banner)
+      case "$arg" in
+        on|1|true)  TX_BANNER=1; _tx_config_set "TX_BANNER" "1"; _tx_say "login banner -> ON" ;;
+        off|0|false) TX_BANNER=0; _tx_config_set "TX_BANNER" "0"; _tx_say "login banner -> OFF" ;;
+        *) _tx_err "usage: txtheme banner <on|off>"; return 1 ;;
+      esac
+      return 0
+      ;;
     autoupdate)
       case "$arg" in
         on|1|true)  TX_AUTOUPDATE=1; _tx_config_set "TX_AUTOUPDATE" "1"; _tx_say "auto-update -> ON" ;;
@@ -1134,13 +1175,14 @@ EOF
       printf '\n%s=== THEAM-X OPTIONS (%s) ===%s\n' "$TX_C2" "$TX_DEVICE" "$TX_CX"
       tx_theme list
       echo
-      echo "  [1] Color Theme    (matrix / cyber / crimson / amber / ice / purple)"
+      echo "  [1] Color Theme    (matrix / cyber / crimson / amber / ice / purple / neon)"
       echo "  [2] Prompt Style   (hacker / minimal / power / compact)"
       echo "  [3] Rain Mode      (binary / hex / glyph)"
       echo "  [4] Toggle Boot    (currently $([[ $TX_BOOT == 1 && ${HV_QUICK:-0} != 1 ]] && echo on || echo off))"
-      echo "  [5] Toggle Update  (currently $([[ $TX_AUTOUPDATE == 1 ]] && echo on || echo off))"
+      echo "  [5] Toggle Banner  (currently $([[ ${TX_BANNER:-1} == 1 ]] && echo on || echo off))"
+      echo "  [6] Toggle Update  (currently $([[ $TX_AUTOUPDATE == 1 ]] && echo on || echo off))"
       echo "  [0] Exit"
-      printf '\n%sSelect [0-5]: %s' "$TX_CY" "$TX_CX"
+      printf '\n%sSelect [0-6]: %s' "$TX_CY" "$TX_CX"
       local ch="" val=""
       read -r ch
       case "$ch" in
@@ -1148,7 +1190,8 @@ EOF
         2) printf 'Prompt (%s): ' "${TX_PROMPTS[*]}"; read -r val; [[ -n $val ]] && tx_theme prompt "$val" ;;
         3) printf 'Rain (%s): ' "${TX_RAINS[*]}"; read -r val; [[ -n $val ]] && tx_theme rain "$val" ;;
         4) if [[ $TX_BOOT == 1 && ${HV_QUICK:-0} != 1 ]]; then tx_theme boot off; else tx_theme boot on; fi ;;
-        5) if [[ $TX_AUTOUPDATE == 1 ]]; then tx_theme autoupdate off; else tx_theme autoupdate on; fi ;;
+        5) if [[ ${TX_BANNER:-1} == 1 ]]; then tx_theme banner off; else tx_theme banner on; fi ;;
+        6) if [[ $TX_AUTOUPDATE == 1 ]]; then tx_theme autoupdate off; else tx_theme autoupdate on; fi ;;
         0|"") ;;
         *) _tx_err "invalid selection" ;;
       esac
@@ -1224,8 +1267,15 @@ tx_help() {
   printf '\n%s=== THEAM-X v%s (%s | theme:%s | prompt:%s | rain:%s) ===%s\n\n' \
     "$TX_C2" "$(tx_local_ver)" "$TX_DEVICE" "$TX_THEME" "$TX_PROMPT" "$TX_RAIN" "$TX_CX"
   cat <<EOF
+${TX_CA}Small AI Assistant (/ai)${TX_CX}
+  /ai                         Setup wizard (first run) or interactive AI chat
+  /ai <prompt>                Ask AI directly (also supports piped stdin)
+  /ai -c <task>               Generate a shell command (asks before running)
+  /ai config | status | test  Configure base_url / api_key / model / type / etcs
+  /ai set <key> <value>       Set type, base_url, api_key, model, system, temp, max_tokens
+
 ${TX_CA}Theme & Visuals${TX_CX}
-  txtheme [name|prompt|rain]  Switch colors, prompt style, rain, boot, autoupdate
+  txtheme [name|prompt|rain]  Switch colors, prompt style, rain, boot, banner, update
   txconfig [show|set|edit]    Manage ~/.sino/config safely
   sfetch [-q]                 System info (animated panel, or -q for quick CLI)
   hv                          Live system monitor (t:theme r:rain p:pause q:quit)
@@ -1240,8 +1290,13 @@ ${TX_CA}Network & Security${TX_CX}
   pingtest [host]             Latency test (default: 1.1.1.1, 8.8.8.8, github.com)
   dns <domain> [type]         DNS lookup (dig/host/nslookup/getent fallback)
   passgen [len] [count]       Cryptographic random password generator
+  txssh [status|keys|addkey]  SSH status, active sessions & authorized_keys helper
 
 ${TX_CA}System, VPS & Termux${TX_CX}
+  txcpu                       CPU model, cores, frequency, load & temp
+  txmem                       RAM/Swap breakdown + top memory processes
+  txtemp                      Thermal zones & hardware sensors
+  txlog [sys|auth|kernel|svc] View system, SSH auth, kernel, or service logs
   diskinfo [path]             Clean filesystem usage + largest items in path
   proctop [n]                 Top CPU & RAM processes
   svc [cmd] [name]            Service manager (systemd / openrc / termux-services)
@@ -1734,7 +1789,828 @@ tx_diag() {
   else
     printf '  %b terminal size %dx%d (too small for panels, need 50x14)\n' "$wn" "$COLS" "$ROWS"
   fi
+  if [[ -f "$TX_HOME/ai.conf" ]]; then
+    printf '  %b /ai config present (%s)\n' "$ok" "$TX_HOME/ai.conf"
+  else
+    printf '  %b /ai not configured yet (run: /ai config)\n' "$wn"
+  fi
   echo
+}
+
+tx_cpu() {
+  hv_stats_static
+  hv_stats_fast
+  local temp_str
+  temp_str=$(hv_temp_sysfs 2>/dev/null || echo "n/a")
+  local freq="n/a" cur_khz=""
+  if [[ -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq ]]; then
+    read -r cur_khz < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || cur_khz=""
+    _tx_is_int "$cur_khz" && freq="$(( cur_khz / 1000 )) MHz"
+  elif [[ -r /proc/cpuinfo ]]; then
+    local mhz
+    mhz=$(awk -F: '/^cpu MHz/{gsub(/ /,"",$2); printf "%.0f", $2; exit}' /proc/cpuinfo 2>/dev/null || true)
+    [[ -n $mhz ]] && freq="${mhz} MHz"
+  fi
+  printf '%s=== CPU INFO ===%s\n' "$TX_C2" "$TX_CX"
+  printf '%sModel  :%s %s\n' "$TX_CA" "$TX_CX" "$CPUMODEL"
+  printf '%sArch   :%s %s (%s core(s))\n' "$TX_CA" "$TX_CX" "$(uname -m 2>/dev/null || echo unknown)" "$NCPU"
+  printf '%sFreq   :%s %s\n' "$TX_CA" "$TX_CX" "$freq"
+  printf '%sLoad   :%s %s  %s  %s\n' "$TX_CA" "$TX_CX" "$L1" "$L2" "$L3"
+  printf '%sTemp   :%s %s\n' "$TX_CA" "$TX_CX" "$temp_str"
+}
+
+tx_mem() {
+  printf '%s=== MEMORY & SWAP ===%s\n' "$TX_C2" "$TX_CX"
+  if [[ -r /proc/meminfo ]]; then
+    local k v mt=0 ma=0 mf=0 mb=0 mc=0 st=0 sf=0
+    while read -r k v _; do
+      _tx_is_int "$v" || continue
+      case $k in
+        MemTotal:)     mt=$v ;;
+        MemAvailable:) ma=$v ;;
+        MemFree:)      mf=$v ;;
+        Buffers:)      mb=$v ;;
+        Cached:)       mc=$v ;;
+        SwapTotal:)    st=$v ;;
+        SwapFree:)     sf=$v ;;
+      esac
+    done < /proc/meminfo
+    (( ma == 0 && mf > 0 )) && ma=$(( mf + mb + mc ))
+    local used=$(( mt - ma ))
+    (( used < 0 )) && used=0
+    local pct=0
+    (( mt > 0 )) && pct=$(( 100 * used / mt ))
+    printf '%sRAM Total :%s %d MB\n' "$TX_CA" "$TX_CX" $(( mt / 1024 ))
+    printf '%sRAM Used  :%s %d MB (%d%%)\n' "$TX_CA" "$TX_CX" $(( used / 1024 )) "$pct"
+    printf '%sRAM Avail :%s %d MB  (Free: %d MB | Buf/Cache: %d MB)\n' \
+      "$TX_CA" "$TX_CX" $(( ma / 1024 )) $(( mf / 1024 )) $(( (mb + mc) / 1024 ))
+    if (( st > 0 )); then
+      printf '%sSwap      :%s %d / %d MB used\n' "$TX_CA" "$TX_CX" $(( (st - sf) / 1024 )) $(( st / 1024 ))
+    else
+      printf '%sSwap      :%s disabled\n' "$TX_CA" "$TX_CX"
+    fi
+  else
+    _tx_warn "/proc/meminfo unreadable"
+  fi
+  echo
+  printf '%sTop RAM Processes:%s\n' "$TX_CA" "$TX_CX"
+  if ps aux --sort=-%mem >/dev/null 2>&1; then
+    ps aux --sort=-%mem | head -n 6
+  elif ps -eo pid,user,%mem,%cpu,comm >/dev/null 2>&1; then
+    ps -eo pid,user,%mem,%cpu,comm | head -n 6
+  fi
+}
+
+tx_temp() {
+  printf '%s=== THERMAL SENSORS ===%s\n' "$TX_C2" "$TX_CX"
+  local found=0 deg_u="C"
+  _tx_is_utf8 && deg_u="°C"
+  if command -v sensors >/dev/null 2>&1; then
+    sensors 2>/dev/null && found=1 || true
+  fi
+  local d ztype raw val
+  for d in /sys/class/thermal/thermal_zone*; do
+    [[ -r "$d/temp" ]] || continue
+    read -r raw < "$d/temp" 2>/dev/null || continue
+    _tx_is_int "${raw#-}" || continue
+    [[ -r "$d/type" ]] && read -r ztype < "$d/type" 2>/dev/null || ztype="${d##*/}"
+    if (( raw > 1000 )); then val="$(( raw / 1000 )).$(( (raw % 1000) / 100 ))"; else val="$raw"; fi
+    printf '  %-20s %s%s\n' "${ztype:0:20}" "$val" "$deg_u"
+    found=1
+  done
+  if (( ! found )); then
+    _tx_warn "no thermal sensors exposed on this ${TX_DEVICE}"
+  fi
+}
+
+tx_log() {
+  local mode="${1:-sys}" svcname="${2:-}"
+  local SUDO=""
+  if [[ $TX_DEVICE != termux && $EUID -ne 0 ]] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+  case "$mode" in
+    -h|--help|help)
+      echo "Usage: txlog [sys|auth|kernel|svc <name>]"
+      return 0
+      ;;
+    sys)
+      if command -v journalctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        $SUDO journalctl -n 40 --no-pager
+      elif [[ -r /var/log/syslog ]]; then
+        tail -n 40 /var/log/syslog
+      elif [[ -r /var/log/messages ]]; then
+        tail -n 40 /var/log/messages
+      elif command -v logcat >/dev/null 2>&1; then
+        logcat -d -t 40
+      else
+        _tx_warn "no readable system log found"
+      fi
+      ;;
+    auth)
+      if command -v journalctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        $SUDO journalctl -u ssh -u sshd -n 40 --no-pager
+      elif [[ -r /var/log/auth.log ]]; then
+        $SUDO tail -n 40 /var/log/auth.log
+      elif [[ -r /var/log/secure ]]; then
+        $SUDO tail -n 40 /var/log/secure
+      else
+        _tx_warn "no readable SSH/auth log found"
+      fi
+      ;;
+    kernel|dmesg)
+      $SUDO dmesg -T 2>/dev/null | tail -n 40 || $SUDO dmesg 2>/dev/null | tail -n 40 || _tx_warn "dmesg unavailable"
+      ;;
+    svc)
+      [[ -n $svcname ]] || { _tx_err "usage: txlog svc <service>"; return 1; }
+      if command -v journalctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        $SUDO journalctl -u "$svcname" -n 40 --no-pager
+      else
+        _tx_warn "journalctl unavailable"
+      fi
+      ;;
+    *)
+      tx_log svc "$mode"
+      ;;
+  esac
+}
+
+tx_ssh() {
+  local sub="${1:-status}"
+  case "$sub" in
+    -h|--help|help)
+      echo "Usage: txssh [status|keys|addkey <pubkey>]"
+      return 0
+      ;;
+    status|"")
+      printf '%s=== SSH STATUS ===%s\n' "$TX_C2" "$TX_CX"
+      if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        local st
+        st=$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || echo "inactive")
+        printf '%sService  :%s %s\n' "$TX_CA" "$TX_CX" "$st"
+      elif pgrep -x sshd >/dev/null 2>&1; then
+        printf '%sService  :%s running (sshd)\n' "$TX_CA" "$TX_CX"
+      else
+        printf '%sService  :%s not running\n' "$TX_CA" "$TX_CX"
+      fi
+      local port="22"
+      if [[ -r /etc/ssh/sshd_config ]]; then
+        local p
+        p=$(awk '/^[[:space:]]*Port[[:space:]]+/{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null || true)
+        [[ -n $p ]] && port="$p"
+      fi
+      printf '%sPort     :%s %s\n' "$TX_CA" "$TX_CX" "$port"
+      local kcnt=0
+      [[ -f "$HOME/.ssh/authorized_keys" ]] && kcnt=$(grep -cve '^[[:space:]]*$' -e '^[[:space:]]*#' "$HOME/.ssh/authorized_keys" 2>/dev/null || echo 0)
+      printf '%sAuthKeys :%s %s key(s) in ~/.ssh/authorized_keys\n' "$TX_CA" "$TX_CX" "$kcnt"
+      printf '%sSessions :%s\n' "$TX_CA" "$TX_CX"
+      who 2>/dev/null || true
+      ;;
+    keys)
+      if [[ ! -s "$HOME/.ssh/authorized_keys" ]]; then
+        _tx_warn "no keys in ~/.ssh/authorized_keys"
+        return 0
+      fi
+      if command -v ssh-keygen >/dev/null 2>&1; then
+        ssh-keygen -lf "$HOME/.ssh/authorized_keys" 2>/dev/null || cat "$HOME/.ssh/authorized_keys"
+      else
+        cat "$HOME/.ssh/authorized_keys"
+      fi
+      ;;
+    addkey)
+      shift
+      local key="$*"
+      [[ -n $key ]] || { _tx_err "usage: txssh addkey \"ssh-ed25519 AAAA...\""; return 1; }
+      [[ "$key" == ssh-* || "$key" == ecdsa-* ]] || { _tx_err "invalid SSH public key format"; return 1; }
+      mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+      touch "$HOME/.ssh/authorized_keys" && chmod 600 "$HOME/.ssh/authorized_keys"
+      if grep -qxF "$key" "$HOME/.ssh/authorized_keys" 2>/dev/null; then
+        _tx_warn "key already present in ~/.ssh/authorized_keys"
+        return 0
+      fi
+      printf '%s\n' "$key" >> "$HOME/.ssh/authorized_keys"
+      _tx_say "added key to ~/.ssh/authorized_keys"
+      ;;
+    *)
+      _tx_err "usage: txssh [status|keys|addkey <pubkey>]"
+      return 1
+      ;;
+  esac
+}
+
+# =====================================================================
+#  SMALL AI ASSISTANT (/ai | ai | txai)
+# =====================================================================
+TX_AI_TYPES=(openai gemini anthropic ollama)
+
+_tx_ai_default_url() {
+  case "$1" in
+    openai)    printf 'https://api.openai.com/v1' ;;
+    gemini)    printf 'https://generativelanguage.googleapis.com/v1beta' ;;
+    anthropic) printf 'https://api.anthropic.com/v1' ;;
+    ollama)    printf 'http://127.0.0.1:11434' ;;
+    *)         printf 'https://api.openai.com/v1' ;;
+  esac
+}
+
+_tx_ai_default_model() {
+  case "$1" in
+    openai)    printf 'gpt-4o-mini' ;;
+    gemini)    printf 'gemini-2.5-flash' ;;
+    anthropic) printf 'claude-3-5-haiku-latest' ;;
+    ollama)    printf 'llama3.2' ;;
+    *)         printf 'gpt-4o-mini' ;;
+  esac
+}
+
+_tx_ai_load() {
+  TX_AI_TYPE=""
+  TX_AI_BASE_URL=""
+  TX_AI_API_KEY=""
+  TX_AI_MODEL=""
+  TX_AI_SYSTEM="You are a concise, accurate Linux VPS and Termux terminal assistant."
+  TX_AI_TEMP="0.7"
+  TX_AI_MAX_TOKENS="1024"
+  TX_AI_TIMEOUT="45"
+  [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
+  TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
+}
+
+_tx_ai_save() {
+  mkdir -p "$TX_HOME" || return 1
+  local tmp="$TX_HOME/.aicfg.$$"
+  local q_type q_url q_key q_model q_sys q_temp q_tok q_to
+  printf -v q_type  '%q' "$TX_AI_TYPE"
+  printf -v q_url   '%q' "${TX_AI_BASE_URL%/}"
+  printf -v q_key   '%q' "$TX_AI_API_KEY"
+  printf -v q_model '%q' "$TX_AI_MODEL"
+  printf -v q_sys   '%q' "$TX_AI_SYSTEM"
+  printf -v q_temp  '%q' "$TX_AI_TEMP"
+  printf -v q_tok   '%q' "$TX_AI_MAX_TOKENS"
+  printf -v q_to    '%q' "$TX_AI_TIMEOUT"
+  (
+    umask 077
+    {
+      echo "# Theam-X AI config (chmod 600 — keep private)"
+      echo "TX_AI_TYPE=$q_type"
+      echo "TX_AI_BASE_URL=$q_url"
+      echo "TX_AI_API_KEY=$q_key"
+      echo "TX_AI_MODEL=$q_model"
+      echo "TX_AI_SYSTEM=$q_sys"
+      echo "TX_AI_TEMP=$q_temp"
+      echo "TX_AI_MAX_TOKENS=$q_tok"
+      echo "TX_AI_TIMEOUT=$q_to"
+    } > "$tmp"
+  ) && chmod 600 "$tmp" && mv -f "$tmp" "$TX_HOME/ai.conf" && chmod 600 "$TX_HOME/ai.conf"
+}
+
+_tx_ai_is_configured() {
+  _tx_in_list "${TX_AI_TYPE:-}" "${TX_AI_TYPES[@]}" || return 1
+  [[ -n ${TX_AI_BASE_URL:-} && -n ${TX_AI_MODEL:-} ]] || return 1
+  if [[ "$TX_AI_TYPE" != "ollama" && -z ${TX_AI_API_KEY:-} ]]; then
+    return 1
+  fi
+  return 0
+}
+
+_tx_ai_mask_key() {
+  local k="$1" n=${#1}
+  if (( n == 0 )); then printf '(none)'
+  elif (( n <= 8 )); then printf '****'
+  else printf '%s****%s' "${k:0:4}" "${k:n-4:4}"; fi
+}
+
+_tx_ai_status() {
+  _tx_ai_load
+  printf '\n%s=== /ai CONFIGURATION ===%s\n' "$TX_C2" "$TX_CX"
+  if [[ ! -f "$TX_HOME/ai.conf" ]]; then
+    _tx_warn "Not configured yet. Run: /ai config"
+    return 1
+  fi
+  printf '%sType       :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_TYPE:-unset}"
+  printf '%sBase URL   :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_BASE_URL:-unset}"
+  printf '%sAPI Key    :%s %s\n' "$TX_CA" "$TX_CX" "$(_tx_ai_mask_key "${TX_AI_API_KEY:-}")"
+  printf '%sModel      :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MODEL:-unset}"
+  printf '%sTemp       :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_TEMP:-0.7}"
+  printf '%sMax Tokens :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MAX_TOKENS:-1024}"
+  printf '%sTimeout    :%s %ss\n' "$TX_CA" "$TX_CX" "${TX_AI_TIMEOUT:-45}"
+  printf '%sSystem     :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_SYSTEM:-}"
+  printf '%sFile       :%s %s\n\n' "$TX_CA" "$TX_CX" "$TX_HOME/ai.conf"
+}
+
+_tx_ai_wizard() {
+  _tx_ai_load
+  [[ -t 0 && -t 1 ]] || {
+    _tx_err "/ai is not configured. Configure with:"
+    echo "  /ai set type openai|gemini|anthropic|ollama"
+    echo "  /ai set base_url <url>"
+    echo "  /ai set api_key <key>"
+    echo "  /ai set model <model>"
+    return 1
+  }
+
+  printf '\n%s=== /ai SETUP WIZARD ===%s\n' "$TX_C2" "$TX_CX"
+  echo "  [1] openai    (OpenAI, Groq, OpenRouter, DeepSeek, Together, vLLM)"
+  echo "  [2] gemini    (Google Gemini REST API)"
+  echo "  [3] anthropic (Anthropic Claude API)"
+  echo "  [4] ollama    (Local Ollama server)"
+
+  local cur_type="${TX_AI_TYPE:-openai}" ans=""
+  printf '%sProvider type [%s]: %s' "$TX_CY" "$cur_type" "$TX_CX"
+  read -r ans </dev/tty
+  ans="${ans:-$cur_type}"
+  case "$ans" in
+    1) ans="openai" ;;
+    2) ans="gemini" ;;
+    3) ans="anthropic" ;;
+    4) ans="ollama" ;;
+  esac
+  _tx_in_list "$ans" "${TX_AI_TYPES[@]}" || { _tx_err "invalid type '$ans'"; return 1; }
+  local prev_type="$TX_AI_TYPE"
+  TX_AI_TYPE="$ans"
+
+  local def_url def_model
+  if [[ -n ${TX_AI_BASE_URL:-} && "$prev_type" == "$TX_AI_TYPE" ]]; then
+    def_url="$TX_AI_BASE_URL"
+  else
+    def_url=$(_tx_ai_default_url "$TX_AI_TYPE")
+  fi
+  printf '%sBase URL [%s]: %s' "$TX_CY" "$def_url" "$TX_CX"
+  read -r ans </dev/tty
+  TX_AI_BASE_URL="${ans:-$def_url}"
+  TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
+
+  local key_hint="required"
+  [[ "$TX_AI_TYPE" == "ollama" ]] && key_hint="optional for ollama"
+  [[ -n ${TX_AI_API_KEY:-} ]] && key_hint="keep $(_tx_ai_mask_key "$TX_AI_API_KEY")"
+  printf '%sAPI Key (%s): %s' "$TX_CY" "$key_hint" "$TX_CX"
+  read -rs ans </dev/tty
+  echo
+  if [[ -n $ans ]]; then
+    TX_AI_API_KEY="$ans"
+  elif [[ "$TX_AI_TYPE" != "ollama" && -z ${TX_AI_API_KEY:-} ]]; then
+    _tx_err "API key is required for ${TX_AI_TYPE}"
+    return 1
+  fi
+
+  if [[ -n ${TX_AI_MODEL:-} && "$prev_type" == "$TX_AI_TYPE" ]]; then
+    def_model="$TX_AI_MODEL"
+  else
+    def_model=$(_tx_ai_default_model "$TX_AI_TYPE")
+  fi
+  printf '%sModel [%s]: %s' "$TX_CY" "$def_model" "$TX_CX"
+  read -r ans </dev/tty
+  TX_AI_MODEL="${ans:-$def_model}"
+
+  printf '%sTemperature [%s]: %s' "$TX_CY" "$TX_AI_TEMP" "$TX_CX"
+  read -r ans </dev/tty
+  [[ -n $ans ]] && TX_AI_TEMP="$ans"
+
+  printf '%sMax tokens [%s]: %s' "$TX_CY" "$TX_AI_MAX_TOKENS" "$TX_CX"
+  read -r ans </dev/tty
+  [[ -n $ans ]] && TX_AI_MAX_TOKENS="$ans"
+
+  printf '%sSystem prompt [Enter = default]: %s' "$TX_CY" "$TX_CX"
+  read -r ans </dev/tty
+  [[ -n $ans ]] && TX_AI_SYSTEM="$ans"
+
+  _tx_ai_save || { _tx_err "failed to save $TX_HOME/ai.conf"; return 1; }
+  _tx_say "saved AI config to $TX_HOME/ai.conf (mode 600)"
+
+  printf '%sTest connection now? [Y/n] %s' "$TX_CY" "$TX_CX"
+  read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+  echo
+  if [[ "$ans" != n && "$ans" != N ]]; then
+    _tx_ai_test
+  fi
+  return 0
+}
+
+_tx_json_escape() {
+  # Reads raw string from stdin, prints JSON-escaped content (without outer quotes)
+  awk '
+    BEGIN { ORS=""; first_line=1 }
+    {
+      if (!first_line) printf "\\n"
+      first_line=0
+      n=length($0)
+      for (i=1; i<=n; i++) {
+        c=substr($0, i, 1)
+        if      (c == "\\") printf "\\\\"
+        else if (c == "\"") printf "\\\""
+        else if (c == "\r") printf "\\r"
+        else if (c == "\t") printf "\\t"
+        else if (c == "\b") printf "\\b"
+        else if (c == "\f") printf "\\f"
+        else printf "%s", c
+      }
+    }
+  '
+}
+
+_tx_ai_parse_reply() {
+  local ptype="$1" resp_file="$2"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$ptype" "$resp_file" <<'PY'
+import json, sys
+ptype, path = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8", errors="replace") as f:
+    raw = f.read()
+try:
+    data = json.loads(raw)
+except Exception:
+    print("ERROR: invalid JSON response:\n" + raw[:400])
+    sys.exit(2)
+
+if isinstance(data, dict) and "error" in data:
+    err = data["error"]
+    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+    print("ERROR: " + msg)
+    sys.exit(1)
+
+txt = ""
+try:
+    if ptype == "openai":
+        txt = data["choices"][0]["message"]["content"]
+    elif ptype == "gemini":
+        parts = data["candidates"][0]["content"]["parts"]
+        txt = "".join(p.get("text", "") for p in parts)
+    elif ptype == "anthropic":
+        parts = data["content"]
+        txt = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    elif ptype == "ollama":
+        txt = data.get("message", {}).get("content", "") or data.get("response", "")
+except Exception as e:
+    print("ERROR: unexpected response format: " + raw[:400])
+    sys.exit(1)
+
+if not txt:
+    print("ERROR: empty reply from model")
+    sys.exit(1)
+sys.stdout.write(txt.rstrip("\n") + "\n")
+PY
+    return $?
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    local err
+    err=$(jq -r 'if .error then (.error.message // .error | tostring) else empty end' "$resp_file" 2>/dev/null || true)
+    if [[ -n $err ]]; then
+      printf 'ERROR: %s\n' "$err"
+      return 1
+    fi
+    local txt=""
+    case "$ptype" in
+      openai)    txt=$(jq -r '.choices[0].message.content // empty' "$resp_file" 2>/dev/null || true) ;;
+      gemini)    txt=$(jq -r '[.candidates[0].content.parts[]?.text] | join("")' "$resp_file" 2>/dev/null || true) ;;
+      anthropic) txt=$(jq -r '[.content[]? | select(.type=="text") | .text] | join("")' "$resp_file" 2>/dev/null || true) ;;
+      ollama)    txt=$(jq -r '.message.content // .response // empty' "$resp_file" 2>/dev/null || true) ;;
+    esac
+    if [[ -n $txt ]]; then
+      printf '%s\n' "$txt"
+      return 0
+    fi
+    printf 'ERROR: unexpected JSON response\n'
+    return 1
+  fi
+
+  # Pure-awk JSON string fallback (for minimal VPS/Termux without python3 or jq)
+  awk -v ptype="$ptype" '
+    BEGIN { RS=""; ORS="" }
+    {
+      s = $0
+      key = (ptype == "gemini" || ptype == "anthropic") ? "\"text\"" : "\"content\""
+      if (index(s, "\"error\"") > 0 && index(s, key) == 0) {
+        key = "\"message\""
+        is_err = 1
+      }
+      pos = index(s, key)
+      if (pos == 0) {
+        print "ERROR: could not parse response: " substr(s, 1, 250) "\n"
+        exit 1
+      }
+      s = substr(s, pos + length(key))
+      sub(/^[[:space:]]*:[[:space:]]*"/, "", s)
+      out = ""
+      n = length(s)
+      for (i=1; i<=n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          i++
+          nc = substr(s, i, 1)
+          if      (nc == "n") out = out "\n"
+          else if (nc == "t") out = out "\t"
+          else if (nc == "r") out = out ""
+          else out = out nc
+        } else if (c == "\"") {
+          break
+        } else {
+          out = out c
+        }
+      }
+      if (is_err) { print "ERROR: " out "\n"; exit 1 }
+      print out "\n"
+    }
+  ' "$resp_file"
+}
+
+_tx_ai_call() {
+  # args: system_override(or empty), user_msg, [hist_pairs...]
+  local sys_ovr="$1"; shift
+  local sys="${sys_ovr:-$TX_AI_SYSTEM}"
+  local -a msgs=("$@")
+  local tmp="$TX_HOME/.aitmp.$$"
+  ( umask 077 && mkdir -p "$tmp" ) || { _tx_err "cannot create temp dir"; return 1; }
+  trap 'rm -rf "$tmp"' RETURN
+
+  local esys endpoint="" hdr_file="$tmp/curl.cfg" body_file="$tmp/body.json" resp_file="$tmp/resp.json"
+  esys=$(printf '%s' "$sys" | _tx_json_escape)
+  local temp_num="${TX_AI_TEMP:-0.7}"
+  local tok_num="${TX_AI_MAX_TOKENS:-1024}"
+  _tx_is_int "$tok_num" || tok_num=1024
+
+  local i role emsg msg_json=""
+  case "$TX_AI_TYPE" in
+    openai|ollama)
+      [[ -n $esys ]] && msg_json="{\"role\":\"system\",\"content\":\"$esys\"}"
+      for ((i=0; i<${#msgs[@]}; i+=2)); do
+        role="${msgs[i]}"
+        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
+        msg_json+="${msg_json:+,}{\"role\":\"${role}\",\"content\":\"${emsg}\"}"
+      done
+      if [[ "$TX_AI_TYPE" == "openai" ]]; then
+        endpoint="${TX_AI_BASE_URL%/}"
+        [[ "$endpoint" == */chat/completions ]] || endpoint="${endpoint}/chat/completions"
+        printf '{"model":"%s","messages":[%s],"temperature":%s,"max_tokens":%s}' \
+          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$msg_json" "$temp_num" "$tok_num" > "$body_file"
+      else
+        endpoint="${TX_AI_BASE_URL%/}"
+        [[ "$endpoint" == */api/chat ]] || endpoint="${endpoint}/api/chat"
+        printf '{"model":"%s","messages":[%s],"stream":false,"options":{"temperature":%s,"num_predict":%s}}' \
+          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$msg_json" "$temp_num" "$tok_num" > "$body_file"
+      fi
+      ;;
+    gemini)
+      endpoint="${TX_AI_BASE_URL%/}"
+      [[ "$endpoint" == *:generateContent ]] || endpoint="${endpoint}/models/${TX_AI_MODEL}:generateContent"
+      local contents="" grole
+      for ((i=0; i<${#msgs[@]}; i+=2)); do
+        role="${msgs[i]}"
+        grole="user"; [[ "$role" == "assistant" ]] && grole="model"
+        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
+        contents+="${contents:+,}{\"role\":\"${grole}\",\"parts\":[{\"text\":\"${emsg}\"}]}"
+      done
+      if [[ -n $esys ]]; then
+        printf '{"system_instruction":{"parts":[{"text":"%s"}]},"contents":[%s],"generationConfig":{"temperature":%s,"maxOutputTokens":%s}}' \
+          "$esys" "$contents" "$temp_num" "$tok_num" > "$body_file"
+      else
+        printf '{"contents":[%s],"generationConfig":{"temperature":%s,"maxOutputTokens":%s}}' \
+          "$contents" "$temp_num" "$tok_num" > "$body_file"
+      fi
+      ;;
+    anthropic)
+      endpoint="${TX_AI_BASE_URL%/}"
+      [[ "$endpoint" == */messages ]] || endpoint="${endpoint}/messages"
+      for ((i=0; i<${#msgs[@]}; i+=2)); do
+        role="${msgs[i]}"
+        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
+        msg_json+="${msg_json:+,}{\"role\":\"${role}\",\"content\":\"${emsg}\"}"
+      done
+      if [[ -n $esys ]]; then
+        printf '{"model":"%s","max_tokens":%s,"temperature":%s,"system":"%s","messages":[%s]}' \
+          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$tok_num" "$temp_num" "$esys" "$msg_json" > "$body_file"
+      else
+        printf '{"model":"%s","max_tokens":%s,"temperature":%s,"messages":[%s]}' \
+          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$tok_num" "$temp_num" "$msg_json" > "$body_file"
+      fi
+      ;;
+    *)
+      _tx_err "unsupported AI type: $TX_AI_TYPE"
+      return 1
+      ;;
+  esac
+
+  local http_code=""
+  if command -v curl >/dev/null 2>&1; then
+    {
+      echo 'header = "Content-Type: application/json"'
+      case "$TX_AI_TYPE" in
+        openai|ollama)
+          [[ -n $TX_AI_API_KEY ]] && printf 'header = "Authorization: Bearer %s"\n' "$TX_AI_API_KEY" ;;
+        gemini)
+          printf 'header = "x-goog-api-key: %s"\n' "$TX_AI_API_KEY" ;;
+        anthropic)
+          printf 'header = "x-api-key: %s"\n' "$TX_AI_API_KEY"
+          echo 'header = "anthropic-version: 2023-06-01"' ;;
+      esac
+    } > "$hdr_file"
+    http_code=$(curl -sS -K "$hdr_file" -o "$resp_file" -w '%{http_code}' \
+      --max-time "${TX_AI_TIMEOUT:-45}" -X POST -d @"$body_file" "$endpoint" 2>"$tmp/err.txt") || {
+      _tx_err "request failed: $(cat "$tmp/err.txt" 2>/dev/null)"
+      return 1
+    }
+  elif command -v wget >/dev/null 2>&1; then
+    local -a whdrs=(--header="Content-Type: application/json")
+    case "$TX_AI_TYPE" in
+      openai|ollama) [[ -n $TX_AI_API_KEY ]] && whdrs+=(--header="Authorization: Bearer ${TX_AI_API_KEY}") ;;
+      gemini)        whdrs+=(--header="x-goog-api-key: ${TX_AI_API_KEY}") ;;
+      anthropic)     whdrs+=(--header="x-api-key: ${TX_AI_API_KEY}" --header="anthropic-version: 2023-06-01") ;;
+    esac
+    wget -qO "$resp_file" -T "${TX_AI_TIMEOUT:-45}" "${whdrs[@]}" --post-file="$body_file" "$endpoint" 2>"$tmp/err.txt" || {
+      _tx_err "request failed: $(cat "$tmp/err.txt" 2>/dev/null)"
+      return 1
+    }
+    http_code="200"
+  else
+    _tx_err "curl or wget is required for /ai"
+    return 1
+  fi
+
+  local parsed rc=0
+  parsed=$(_tx_ai_parse_reply "$TX_AI_TYPE" "$resp_file") || rc=$?
+  if (( rc != 0 )) || [[ "$parsed" == ERROR:* ]]; then
+    _tx_err "HTTP ${http_code:-?}: ${parsed#ERROR: }"
+    return 1
+  fi
+  if _tx_is_int "$http_code" && (( http_code >= 400 )); then
+    _tx_err "HTTP ${http_code}: $parsed"
+    return 1
+  fi
+  printf '%s\n' "$parsed"
+}
+
+_tx_ai_test() {
+  _tx_ai_load
+  _tx_ai_is_configured || { _tx_err "AI not configured. Run: /ai config"; return 1; }
+  printf '%s[*]%s testing %s (%s @ %s)...\n' "$TX_CY" "$TX_CX" "$TX_AI_MODEL" "$TX_AI_TYPE" "$TX_AI_BASE_URL"
+  local reply
+  reply=$(_tx_ai_call "Reply with only: OK" "user" "Say OK") || return 1
+  _tx_say "connection OK -> ${reply}"
+}
+
+_tx_ai_cmd_helper() {
+  local task="$*"
+  [[ -n $task ]] || { _tx_err "usage: /ai -c <describe task>"; return 1; }
+  local sys="Return ONLY a single safe bash command for ${TX_DEVICE} (${OSNAME:-Linux}) with no markdown fences, no backticks, and no explanation."
+  local cmd
+  cmd=$(_tx_ai_call "$sys" "user" "$task") || return 1
+  cmd="${cmd#\`\`\`bash}"; cmd="${cmd#\`\`\`sh}"; cmd="${cmd#\`\`\`}"
+  cmd="${cmd%\`\`\`}"
+  cmd=$(printf '%s' "$cmd" | sed '/^[[:space:]]*$/d' | head -n1)
+  printf '%s[command]%s %s\n' "$TX_CA" "$TX_CX" "$cmd"
+  if [[ -t 0 && -t 1 ]]; then
+    printf '%sRun this command? [y/N] %s' "$TX_CY" "$TX_CX"
+    local ans=""
+    read -r -n 1 ans </dev/tty 2>/dev/null || ans=""
+    echo
+    if [[ "$ans" == y || "$ans" == Y ]]; then
+      eval "$cmd"
+    fi
+  fi
+}
+
+_tx_ai_chat() {
+  printf '\n%s=== /ai CHAT (%s | %s) ===%s\n' "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "$TX_CX"
+  printf '%sCommands: /help  /clear  /model <m>  /config  /status  /exit%s\n\n' "$TX_CD" "$TX_CX"
+  local -a hist=()
+  local line reply
+  while true; do
+    printf '%syou > %s' "$TX_C2" "$TX_CX"
+    IFS= read -r line || { echo; break; }
+    [[ -z "${line// /}" ]] && continue
+    case "$line" in
+      /exit|/quit|exit|quit|q) break ;;
+      /clear)
+        hist=()
+        _tx_say "chat history cleared"
+        continue
+        ;;
+      /status)
+        _tx_ai_status
+        continue
+        ;;
+      /config)
+        _tx_ai_wizard
+        _tx_ai_load
+        continue
+        ;;
+      /model\ *)
+        TX_AI_MODEL="${line#/model }"
+        _tx_ai_save && _tx_say "model -> $TX_AI_MODEL"
+        continue
+        ;;
+      /help)
+        echo "  /clear         clear conversation history"
+        echo "  /model <name>  switch model"
+        echo "  /config        re-run setup wizard"
+        echo "  /status        show current AI config"
+        echo "  /exit          leave chat"
+        continue
+        ;;
+    esac
+    hist+=("user" "$line")
+    if (( ${#hist[@]} > 20 )); then
+      hist=("${hist[@]:2}")
+    fi
+    reply=$(_tx_ai_call "" "${hist[@]}") || continue
+    hist+=("assistant" "$reply")
+    printf '\n%sai >%s %s\n\n' "$TX_CA" "$TX_CX" "$reply"
+  done
+}
+
+tx_ai() {
+  _tx_ai_load
+  local sub="${1:-}"
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: /ai [option | prompt]
+  /ai                         First-time setup wizard, or interactive AI chat
+  /ai <prompt>                One-shot question (also accepts piped stdin)
+  /ai -c <task>               Generate a shell command and prompt before running
+  /ai config | setup          Configure type, base_url, api_key, model, temp, tokens, system
+  /ai set <key> <value>       Set: type | base_url | api_key | model | system | temp | max_tokens | timeout
+  /ai status | show           Show active AI settings (API key masked)
+  /ai test                    Test API connectivity
+  /ai reset                   Remove ~/.sino/ai.conf
+EOF
+      return 0
+      ;;
+    config|setup)
+      _tx_ai_wizard
+      return $?
+      ;;
+    status|show)
+      _tx_ai_status
+      return $?
+      ;;
+    test)
+      _tx_ai_test
+      return $?
+      ;;
+    reset)
+      rm -f "$TX_HOME/ai.conf"
+      _tx_say "removed $TX_HOME/ai.conf"
+      return 0
+      ;;
+    set)
+      local k="${2:-}"
+      [[ -n $k && $# -ge 3 ]] || { _tx_err "usage: /ai set <type|base_url|api_key|model|system|temp|max_tokens|timeout> <value>"; return 1; }
+      shift 2
+      local v="$*"
+      case "$k" in
+        type)
+          _tx_in_list "$v" "${TX_AI_TYPES[@]}" || { _tx_err "type must be: ${TX_AI_TYPES[*]}"; return 1; }
+          TX_AI_TYPE="$v"
+          [[ -z $TX_AI_BASE_URL ]] && TX_AI_BASE_URL=$(_tx_ai_default_url "$v")
+          [[ -z $TX_AI_MODEL ]]    && TX_AI_MODEL=$(_tx_ai_default_model "$v")
+          ;;
+        base_url|url)     TX_AI_BASE_URL="${v%/}" ;;
+        api_key|api|key)  TX_AI_API_KEY="$v" ;;
+        model)            TX_AI_MODEL="$v" ;;
+        system)           TX_AI_SYSTEM="$v" ;;
+        temp|temperature) TX_AI_TEMP="$v" ;;
+        max_tokens|tokens) TX_AI_MAX_TOKENS="$v" ;;
+        timeout)          TX_AI_TIMEOUT="$v" ;;
+        *) _tx_err "unknown key '$k'"; return 1 ;;
+      esac
+      _tx_ai_save && _tx_say "/ai ${k} saved"
+      return $?
+      ;;
+  esac
+
+  if ! _tx_ai_is_configured; then
+    _tx_warn "/ai needs configuration first (type, base_url, api_key, model)."
+    _tx_ai_wizard || return 1
+    _tx_ai_load
+    (( $# == 0 )) && return 0
+  fi
+
+  local piped=""
+  if [[ ! -t 0 ]]; then
+    piped=$(head -c 16384 2>/dev/null || true)
+  fi
+
+  if [[ "$sub" == "-c" || "$sub" == "--cmd" || "$sub" == "cmd" ]]; then
+    shift
+    _tx_ai_cmd_helper "$*"
+    return $?
+  fi
+
+  local prompt="$*"
+  if [[ -n $piped ]]; then
+    if [[ -n $prompt ]]; then
+      prompt="${prompt}"$'\n\n'"Input:"$'\n'"${piped}"
+    else
+      prompt="$piped"
+    fi
+  fi
+
+  if [[ -n $prompt ]]; then
+    local ans
+    ans=$(_tx_ai_call "" "user" "$prompt") || return 1
+    printf '%s\n' "$ans"
+  else
+    _tx_ai_chat
+  fi
 }
 
 # =====================================================================
@@ -1882,14 +2758,29 @@ _tx_subcmd_complete() {
   case "$cmd" in
     txtheme)
       if (( COMP_CWORD == 1 )); then
-        words="matrix cyber crimson amber ice purple prompt rain boot autoupdate list menu"
+        words="matrix cyber crimson amber ice purple neon prompt rain boot banner autoupdate list menu"
       elif [[ "$prev" == prompt ]]; then
         words="hacker minimal power compact"
       elif [[ "$prev" == rain ]]; then
         words="binary hex glyph"
-      elif [[ "$prev" == boot || "$prev" == autoupdate ]]; then
+      elif [[ "$prev" == boot || "$prev" == banner || "$prev" == autoupdate ]]; then
         words="on off"
       fi
+      ;;
+    /ai|ai|txai)
+      if (( COMP_CWORD == 1 )); then
+        words="config setup status show test set reset -c cmd --help"
+      elif [[ "$prev" == set ]]; then
+        words="type base_url api_key model system temp max_tokens timeout"
+      elif [[ "$prev" == type ]]; then
+        words="openai gemini anthropic ollama"
+      fi
+      ;;
+    txlog)
+      (( COMP_CWORD == 1 )) && words="sys auth kernel svc"
+      ;;
+    txssh)
+      (( COMP_CWORD == 1 )) && words="status keys addkey"
       ;;
     txconfig)
       (( COMP_CWORD == 1 )) && words="show get set edit reset"
@@ -1932,7 +2823,7 @@ _tx_register_complete() {
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
     ssh python python3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
-    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup 2>/dev/null || true
+    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh /ai ai txai 2>/dev/null || true
 }
 _tx_register_complete
 
@@ -1971,6 +2862,14 @@ txdiag()      { tx_diag "$@"; }
 txbattery()   { tx_battery "$@"; }
 txstorage()   { tx_storage "$@"; }
 txwake()      { tx_wake "$@"; }
+txcpu()       { tx_cpu "$@"; }
+txmem()       { tx_mem "$@"; }
+txtemp()      { tx_temp "$@"; }
+txlog()       { tx_log "$@"; }
+txssh()       { tx_ssh "$@"; }
+/ai()         { tx_ai "$@"; }
+ai()          { tx_ai "$@"; }
+txai()        { tx_ai "$@"; }
 
 # ---------------------------------------------------------------------
 #  prompt theme
@@ -1984,6 +2883,7 @@ hv_prompt() {
     amber)   c1='\[\e[0;33m\]'; c2='\[\e[1;93m\]'; ca='\[\e[1;97m\]' ;;
     ice)     c1='\[\e[0;34m\]'; c2='\[\e[1;94m\]'; ca='\[\e[1;96m\]' ;;
     purple)  c1='\[\e[0;35m\]'; c2='\[\e[1;95m\]'; ca='\[\e[1;96m\]' ;;
+    neon)    c1='\[\e[0;92m\]'; c2='\[\e[1;95m\]'; ca='\[\e[1;93m\]' ;;
   esac
   local r='\[\e[1;91m\]' w='\[\e[1;97m\]' x='\[\e[0m\]'
   local uc=$c2; (( EUID == 0 )) && uc=$r
@@ -2049,7 +2949,11 @@ if (return 0 2>/dev/null); then
       if [[ -s "$TX_HOME/notice" ]]; then
         printf '%s[*]%s %s\n' "$TX_CY" "$TX_CX" "$(cat "$TX_HOME/notice")"; rm -f "$TX_HOME/notice"
       fi
-      printf '%s[+] ready.%s  theamx | txtheme | sfetch | hv | myip | ports | txdiag\n' "$TX_C2" "$TX_C1"
+      if [[ "${TX_BANNER:-1}" == 1 ]]; then
+        printf '%s[THEAM-X v%s]%s %s | theme:%s | prompt:%s | /ai ready\n' \
+          "$TX_C2" "$(tx_local_ver)" "$TX_C1" "$TX_DEVICE" "$TX_THEME" "$TX_PROMPT"
+      fi
+      printf '%s[+] ready.%s  theamx | /ai | txtheme | sfetch | hv | txcpu | txmem | txdiag\n' "$TX_C2" "$TX_C1"
       printf '%s' "$TX_CX"
 
       tx_stamp="$TX_HOME/.last_check"
@@ -2094,6 +2998,12 @@ else
     battery|txbattery) tx_battery "$@" ;;
     storage|txstorage) tx_storage "$@" ;;
     wake|txwake)   tx_wake "$@" ;;
-    *) echo "usage: $0 {help|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
+    cpu|txcpu)     tx_cpu "$@" ;;
+    mem|txmem)     tx_mem "$@" ;;
+    temp|txtemp)   tx_temp "$@" ;;
+    log|txlog)     tx_log "$@" ;;
+    ssh|txssh)     tx_ssh "$@" ;;
+    ai|/ai|txai)   tx_ai "$@" ;;
+    *) echo "usage: $0 {help|ai|/ai|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
   esac
 fi

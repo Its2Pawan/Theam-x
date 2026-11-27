@@ -10,10 +10,10 @@
 
 # Theam-X
 
-**Hacker-style terminal theme & toolkit for VPS and Termux**
-6 color themes · 4 prompt styles · 3 matrix rain modes · live monitor · VPS & Termux utilities · auto-update
+**Hacker-style terminal theme, system toolkit & built-in `/ai` assistant for VPS and Termux**
+7 color themes · 4 prompt styles · 3 matrix rain modes · `/ai` chat & command helper · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-2.0.0-brightgreen)
+![version](https://img.shields.io/badge/version-2.1.0-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
@@ -24,14 +24,14 @@
 
 ## Features
 
-- **Multiple Color Themes (`txtheme`)**: `matrix`, `cyber`, `crimson`, `amber`, `ice`, `purple` — switch live or save to config.
-- **Multiple Prompt Styles**: `hacker` (2-line box), `minimal` (1-line), `power` (device + time + git + exit code), `compact`.
-- **Multiple Rain Modes**: `binary` (`0/1`), `hex` (`0-9A-F`), `glyph` (`!@#$%&*...`).
+- **Built-in Small AI (`/ai`, `ai`, `txai`)**: Supports `openai` (OpenAI / Groq / OpenRouter / DeepSeek / vLLM), `gemini`, `anthropic`, and `ollama`. Prompts for provider type, base URL, API key, model, temperature, max tokens, and system prompt on first run (saved privately to `~/.sino/ai.conf` with `chmod 600`). Supports one-shot questions, piped logs, interactive multi-turn chat, and `-c` command generation.
+- **7 Color Themes (`txtheme`)**: `matrix`, `cyber`, `crimson`, `amber`, `ice`, `purple`, `neon` — switch live or save to config.
+- **4 Prompt Styles**: `hacker`, `minimal`, `power`, `compact`.
+- **3 Rain Modes**: `binary` (`0/1`), `hex` (`0-9A-F`), `glyph` (`!@#$%&*...`).
 - **Boot screen (`hvboot`)**: Matrix rain with typed startup log (press any key to skip; respects cooldown).
-- **`sfetch`**: Animated rain info panel, or `sfetch -q` / `--cli` for instant TX ASCII logo + system specs.
-- **`hv`**: Live system monitor (CPU, RAM, Disk, Load, Network speed, Battery, Services) with live hotkeys (`t` theme, `r` rain, `p` pause, `q` quit).
-- **Useful VPS + Termux Toolkit**: `myip`, `ports`, `netinfo`, `pingtest`, `dns`, `passgen`, `diskinfo`, `proctop`, `svc`, `sysup`, `txclean`, `extract`, `mkcd`, `backup`, `serve`, `txdiag`, `txbattery`, `txstorage`, `txwake`.
-- **Smart Bash Completion**: Case-insensitive path completion, `~/` directory completion, and subcommand completion.
+- **`sfetch` / `sfetch -q`**: Animated rain info panel or instant TX ASCII logo + system specs.
+- **`hv`**: Live system monitor (CPU, RAM, Disk, Load, Network speed, Temp, Battery, Services) with live hotkeys (`t` theme, `r` rain, `p` pause, `q` quit).
+- **VPS + Termux System Toolkit**: `txcpu`, `txmem`, `txtemp`, `txlog`, `txssh`, `myip`, `ports`, `netinfo`, `pingtest`, `dns`, `passgen`, `diskinfo`, `proctop`, `svc`, `sysup`, `txclean`, `extract`, `mkcd`, `backup`, `serve`, `txdiag`, `txbattery`, `txstorage`, `txwake`.
 - **Auto-update**: Checks `ver.txt` on GitHub once a day with safe bash syntax validation before applying.
 
 ## Install
@@ -60,7 +60,26 @@ Then load it:
 source ~/.bashrc
 ```
 
-Everything is installed into `~/.sino` (`/root/.sino` on a root VPS) and loaded from `~/.bashrc`.
+## Small AI (`/ai`)
+
+On your first run of `/ai`, Theam-X asks you to configure:
+- **Type**: `openai` | `gemini` | `anthropic` | `ollama`
+- **Base URL**: e.g. `https://api.openai.com/v1`, `https://api.groq.com/openai/v1`, `https://generativelanguage.googleapis.com/v1beta`, `https://api.anthropic.com/v1`, `http://127.0.0.1:11434`
+- **API Key**: hidden input, stored with `chmod 600` in `~/.sino/ai.conf` (optional for local `ollama`)
+- **Model & Extras**: model name, temperature, max tokens, system prompt
+
+```bash
+/ai                              # First-time setup wizard, or interactive chat
+/ai explain why nginx failed     # One-shot question
+cat error.log | /ai summarize    # Pipe logs directly to AI
+/ai -c find files larger than 100M  # Generate command and confirm before running
+/ai config                       # Re-run setup wizard
+/ai status | /ai test | /ai reset
+/ai set type openai
+/ai set base_url https://api.groq.com/openai/v1
+/ai set api_key gsk_...
+/ai set model llama-3.3-70b-versatile
+```
 
 ## Commands
 
@@ -68,7 +87,7 @@ Everything is installed into `~/.sino` (`/root/.sino` on a root VPS) and loaded 
 | Command | What it does |
 |---|---|
 | `theamx` / `txhelp` | Show full command reference & active theme info |
-| `txtheme` | Interactive options menu (`txtheme <color>`, `txtheme prompt <style>`, `txtheme rain <mode>`) |
+| `txtheme` | Interactive options menu (`txtheme <color>`, `txtheme prompt <style>`, `txtheme rain <mode>`, `txtheme banner on\|off`) |
 | `txconfig` | View/set/edit/reset `~/.sino/config` safely (`show`, `get`, `set`, `edit`, `reset`) |
 | `sfetch` / `sfetch -q` | System info panel (`-q` / `--cli` for instant terminal output) |
 | `hv` | Live monitor (`t` theme, `r` rain, `p` pause, `q` quit) |
@@ -85,10 +104,15 @@ Everything is installed into `~/.sino` (`/root/.sino` on a root VPS) and loaded 
 | `pingtest [host]` | Quick latency test (defaults to `1.1.1.1`, `8.8.8.8`, `github.com`) |
 | `dns <domain> [type]` | DNS record lookup (`dig`/`host`/`nslookup`/`getent`) |
 | `passgen [len] [count]` | Cryptographic random password generator |
+| `txssh [status\|keys\|addkey]` | SSH service status, active sessions & `authorized_keys` manager |
 
 ### System, VPS & Termux
 | Command | What it does |
 |---|---|
+| `txcpu` | CPU model, architecture, cores, frequency, load & temp |
+| `txmem` | RAM & Swap breakdown + top memory processes |
+| `txtemp` | Thermal zones & hardware sensors |
+| `txlog [sys\|auth\|kernel\|svc]` | Unified system, SSH auth, kernel, or service logs (`journalctl`/`dmesg`/`logcat`) |
 | `diskinfo [path]` | Clean filesystem usage + top 10 largest items in path |
 | `proctop [n]` | Top CPU/RAM processes (GNU & BusyBox compatible) |
 | `svc [cmd] [name]` | Service manager (systemd / OpenRC / `termux-services`) |
@@ -110,8 +134,7 @@ Everything is installed into `~/.sino` (`/root/.sino` on a root VPS) and loaded 
 ### Updates & Removal
 | Command | What it does |
 |---|---|
-| `txver` | Show installed version, active theme, and check for updates |
-| `txupdate` | Update now from GitHub |
+| `txver` / `txupdate` | Check version / update from GitHub |
 | `txuninstall` | Uninstall Theam-X interactively |
 
 ## Configuration
@@ -119,10 +142,11 @@ Everything is installed into `~/.sino` (`/root/.sino` on a root VPS) and loaded 
 `~/.sino/config` (created on install, kept on reinstall, editable via `txtheme` or `txconfig`):
 
 ```bash
-TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple
+TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple | neon
 TX_PROMPT="hacker"         # hacker | minimal | power | compact
 TX_RAIN="binary"           # binary | hex | glyph
 TX_BOOT=1                  # 1 = boot animation on login, 0 = skip
+TX_BANNER=1                # 1 = compact status line on login, 0 = hide
 TX_AUTOUPDATE=1            # 0 = never auto update
 TX_CHECK_INTERVAL=86400    # seconds between update checks
 HV_COOLDOWN=300            # seconds before the boot animation can replay
@@ -136,12 +160,6 @@ Run `txuninstall` in your shell, or:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Its2Pawan/Theam-x/main/install.sh | bash -s uninstall
 ```
-
-## Requirements
-
-- bash 4+ (Termux and all current VPS distros have it)
-- `curl` or `wget` (the installer installs curl if both are missing)
-- A terminal of at least 50x14 characters for the animated panels
 
 ## Author
 
