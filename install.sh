@@ -162,7 +162,7 @@ BANNER
   say "installed Theam-X v$(head -n1 "$DEST/ver.txt" | tr -d '[:space:]')"
   echo
   printf '%s\n' "${D}  Run now :${X}  source ~/.bashrc"
-  printf '%s\n' "${D}  Menu/AI :${X}  theamx (or tx) | /ai | txtheme | py (python3)"
+  printf '%s\n' "${D}  Menu    :${X}  theamx (or tx) | txtheme | txconfig | py (python3)"
   printf '%s\n' "${D}  Panels  :${X}  sfetch [-q] | hv | matrix | hvboot | dev"
   printf '%s\n' "${D}  Tools   :${X}  txcpu | txmem | txtemp | txlog | txssh | myip | ports | txdiag"
   printf '%s\n' "${D}  Auto-update is ON (checks GitHub once a day). Turn off: txtheme autoupdate off${X}"
