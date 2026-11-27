@@ -1,0 +1,4 @@
+# keep Linux line endings so the scripts run on VPS / Termux
+*.sh      text eol=lf
+ver.txt   text eol=lf
+*.md      text eol=lf
