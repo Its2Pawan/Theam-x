@@ -1305,6 +1305,8 @@ ${TX_CA}Small AI Assistant (/ai | txagent | airoute | aimem | aiskill)${TX_CX}
   airoute [add|use|list|auto] Multi-provider routes & mood auto-routing
   aimem [add|list|search|del] Persistent AGY-style memory (/remember <fact>)
   /ai config | status | test  Configure base_url / api_key / model / type / etcs
+  Ctrl+O | txfull | /full     Expand/view full last AI or command output
+  /ai compact <on|off>        Toggle compact output (default: on, hides curl/log spam)
 
 ${TX_CA}Theme & Visuals${TX_CX}
   txtheme [name|prompt|rain]  Switch colors, prompt style, rain, boot, banner, update
@@ -2173,8 +2175,9 @@ _tx_ai_default_system() {
 You are a fast Termux (Android ${arch}) terminal copilot.
 STRICT RULES:
 1. Give instructions ONLY for Termux (pkg/bash/Android). NEVER mention Linux VPS, Ubuntu, Debian, CentOS, apt, or sudo unless the user explicitly asks.
-2. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands.
-3. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
+2. Always prefer 'pkg install <pkg>' first on Termux (e.g. 'pkg install cloudflared'). Only use 'curl -fsSL' if no pkg exists, and install binaries to '\$PREFIX/bin/' (never '\$HOME/bin/').
+3. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands.
+4. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
 EOF
   else
     command -v dnf >/dev/null 2>&1 && pkgmgr="dnf"
@@ -2208,6 +2211,7 @@ _tx_ai_load() {
   TX_AI_AUTO="off"
   TX_AI_SKILL=""
   TX_AI_AUTO_SKILL="1"
+  TX_AI_COMPACT="1"
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
   if [[ -z "${TX_AI_MAX_TOKENS:-}" || "${TX_AI_MAX_TOKENS}" == "1024" ]]; then
@@ -2222,7 +2226,7 @@ _tx_ai_load() {
 _tx_ai_save() {
   mkdir -p "$TX_HOME" || return 1
   local tmp="$TX_HOME/.aicfg.$$"
-  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am q_auto q_sk q_as
+  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am q_auto q_sk q_as q_cmp
   printf -v q_type  '%q' "$TX_AI_TYPE"
   printf -v q_url   '%q' "${TX_AI_BASE_URL%/}"
   printf -v q_key   '%q' "$TX_AI_API_KEY"
@@ -2238,6 +2242,7 @@ _tx_ai_save() {
   printf -v q_auto  '%q' "${TX_AI_AUTO:-off}"
   printf -v q_sk    '%q' "${TX_AI_SKILL:-}"
   printf -v q_as    '%q' "${TX_AI_AUTO_SKILL:-1}"
+  printf -v q_cmp   '%q' "${TX_AI_COMPACT:-1}"
   (
     umask 077
     {
@@ -2257,6 +2262,7 @@ _tx_ai_save() {
       echo "TX_AI_AUTO=$q_auto"
       echo "TX_AI_SKILL=$q_sk"
       echo "TX_AI_AUTO_SKILL=$q_as"
+      echo "TX_AI_COMPACT=$q_cmp"
     } > "$tmp"
   ) && chmod 600 "$tmp" && mv -f "$tmp" "$TX_HOME/ai.conf" && chmod 600 "$TX_HOME/ai.conf"
 }
@@ -3529,12 +3535,90 @@ _tx_ai_cmd_helper() {
   fi
 }
 
+_tx_ai_show_full() {
+  [[ -n ${READLINE_LINE+x} ]] && echo
+  local f="$TX_HOME/.last_output"
+  if [[ ! -s "$f" ]]; then
+    _tx_warn "no saved output yet"
+    return 0
+  fi
+  local nlines
+  nlines=$(wc -l < "$f" | tr -d ' ')
+  printf '%s=== FULL OUTPUT (%s lines) ===%s\n' "$TX_C2" "$nlines" "$TX_CX"
+  if [[ -t 0 && -t 1 ]] && (( nlines > 120 )) && command -v less >/dev/null 2>&1; then
+    less -R "$f"
+  else
+    cat "$f"
+  fi
+  echo
+}
+
+_tx_ai_save_output() {
+  mkdir -p "$TX_HOME" 2>/dev/null || return 1
+  if [[ -n ${1:-} && -f "$1" ]]; then
+    cp -f "$1" "$TX_HOME/.last_output" 2>/dev/null || true
+  else
+    cat > "$TX_HOME/.last_output" 2>/dev/null || true
+  fi
+  chmod 600 "$TX_HOME/.last_output" 2>/dev/null || true
+}
+
+_tx_ai_print_compact() {
+  # Reads raw output file, saves full to .last_output, prints clean compact view
+  local src="$1" max_lines="${2:-8}"
+  _tx_ai_save_output "$src"
+  local clean="$TX_HOME/.clean.$$"
+  # Strip carriage-return progress bar spam (e.g. curl % Total ...)
+  awk '{
+    gsub(/\r/, "\n")
+    print
+  }' "$src" | grep -vE '^( *% Total| *Dload|[ 0-9.kMGT:-]{20,}$)' > "$clean" 2>/dev/null || cp -f "$src" "$clean"
+  local total
+  total=$(wc -l < "$clean" | tr -d ' ')
+  if [[ "${TX_AI_COMPACT:-1}" != 1 ]] || (( total <= max_lines )); then
+    cat "$clean"
+  else
+    tail -n "$max_lines" "$clean"
+    printf '%s... (%d lines hidden — press Ctrl+O or run txfull / /full)%s\n' "$TX_CD" $(( total - max_lines )) "$TX_CX"
+  fi
+  rm -f "$clean"
+}
+
+_tx_ai_is_interactive_cmd() {
+  local cmd="$1"
+  [[ "$cmd" =~ (^|[[:space:]\;\|&])(nano|vim|vi|nvim|less|more|top|htop|ssh|su|passwd|pkg|apt|apt-get|dnf|yum|pacman|read)[[:space:]]* ]]
+}
+
+_tx_ai_run_clean() {
+  # Runs command: compact output (with live elapsed spinner) unless interactive or TX_AI_COMPACT=0
+  local cmd="$1" out_log="$2"
+  if [[ "${TX_AI_COMPACT:-1}" != 1 ]] || _tx_ai_is_interactive_cmd "$cmd" || [[ ! -t 1 ]]; then
+    eval "$cmd" 2>&1 | tee "$out_log"
+    local ec=${PIPESTATUS[0]}
+    _tx_ai_save_output "$out_log"
+    return "$ec"
+  fi
+  eval "$cmd" > "$out_log" 2>&1 &
+  local pid=$! t0=$SECONDS
+  local -a sp=('|' '/' '-' '\')
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r%s[*]%s running (%ds) %s ' "$TX_CY" "$TX_CX" $(( SECONDS - t0 )) "${sp[i++ % 4]}"
+    sleep 0.15 2>/dev/null || break
+  done
+  wait "$pid"
+  local ec=$?
+  printf '\r\033[K'
+  _tx_ai_print_compact "$out_log" 8
+  return "$ec"
+}
+
 _tx_ai_exec_with_autofix() {
   local cmd="$1"
   [[ -n $cmd ]] || return 1
   local logf="$TX_HOME/.airun.$$" ec=0
-  eval "$cmd" 2>&1 | tee "$logf"
-  ec=${PIPESTATUS[0]}
+  _tx_ai_run_clean "$cmd" "$logf"
+  ec=$?
   if (( ec != 0 )); then
     _tx_warn "command exited with code ${ec}"
     if [[ -t 0 && -t 1 ]]; then
@@ -3972,8 +4056,8 @@ Inspect existing files before editing, verify after changes, and finish with ACT
         fi
         if (( do_run )); then
           local alog="$TX_HOME/.agent.$$"
-          eval "$arg" 2>&1 | tee "$alog"
-          ec=${PIPESTATUS[0]}
+          _tx_ai_run_clean "$arg" "$alog"
+          ec=$?
           cmd_out=$(tail -n 60 "$alog" 2>/dev/null || true)
           rm -f "$alog"
           obs="Exit code: ${ec}"$'\n'"Output:"$'\n'"${cmd_out:0:4000}"
@@ -4146,6 +4230,18 @@ _tx_ai_chat() {
         tx_ai_auto ${line#/auto}
         continue
         ;;
+      /full|/o)
+        _tx_ai_show_full
+        continue
+        ;;
+      /compact_out|/compact_out\ *)
+        case "${line#/compact_out }" in
+          off|0) TX_AI_COMPACT=0; _tx_ai_save; _tx_say "compact output -> OFF" ;;
+          on|1)  TX_AI_COMPACT=1; _tx_ai_save; _tx_say "compact output -> ON" ;;
+          *) TX_AI_COMPACT=$(( 1 - ${TX_AI_COMPACT:-1} )); _tx_ai_save; _tx_say "compact output -> $([[ $TX_AI_COMPACT == 1 ]] && echo ON || echo OFF)" ;;
+        esac
+        continue
+        ;;
       /skill|/skill\ *)
         tx_ai_skill ${line#/skill}
         _tx_ai_load
@@ -4316,6 +4412,8 @@ Usage: /ai [-y] [option | prompt]
   /ai mood <mode>             Set mood: fast | coder | teacher | strict | friendly
   /ai mem [...]               AGY-style persistent memory store (also: aimem)
   /ai remember <fact>         Save fact to memory (also: /remember <fact>)
+  /ai compact <on|off>        Compact command output mode (default: on; also: txcompact)
+  /ai full                    Show full last command output (also: Ctrl+O | txfull | /full)
   /ai config | setup          Configure type, base_url, api_key, model, temp, tokens, system
   /ai set <key> <value>       Set: type | base_url | api_key | model | system | temp | max_tokens | timeout
   /ai status | show           Show active AI settings (API key masked)
@@ -4327,6 +4425,18 @@ EOF
     auto)
       shift
       tx_ai_auto "$@"
+      return $?
+      ;;
+    compact)
+      case "${2:-}" in
+        on|1)  TX_AI_COMPACT=1; _tx_ai_save; _tx_say "compact output -> ON (Ctrl+O for full)" ;;
+        off|0) TX_AI_COMPACT=0; _tx_ai_save; _tx_say "compact output -> OFF" ;;
+        *)     printf '%sCompact output:%s %s\n' "$TX_CA" "$TX_CX" "$([[ ${TX_AI_COMPACT:-1} == 1 ]] && echo on || echo off)" ;;
+      esac
+      return 0
+      ;;
+    full|o)
+      _tx_ai_show_full
       return $?
       ;;
     skill|skills)
@@ -4700,9 +4810,11 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -y -c cmd --help"
+        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember compact full config setup status show test set reset -y -c cmd --help"
       elif [[ "$prev" == auto ]]; then
         words="off safe on status"
+      elif [[ "$prev" == compact ]]; then
+        words="on off"
       elif [[ "$prev" == skill || "$prev" == skills ]]; then
         words="list install create show use off remove auto"
       elif [[ "$prev" == set ]]; then
@@ -4764,6 +4876,9 @@ _tx_subcmd_complete() {
         words="${HV_SERVICES[*]}"
       fi
       ;;
+    txcompact)
+      (( COMP_CWORD == 1 )) && words="on off"
+      ;;
     txwake)
       (( COMP_CWORD == 1 )) && words="on off"
       ;;
@@ -4792,7 +4907,7 @@ _tx_register_complete() {
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
     ssh python python3 py py3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
-    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh txcron /ai ai txai airoute aimem aiskill 2>/dev/null || true
+    txtheme txconfig sfetch Sfetch svc txwake txcompact dns txclean sysup txlog txssh txcron /ai ai txai airoute aimem aiskill 2>/dev/null || true
 }
 _tx_register_complete
 
@@ -4846,6 +4961,8 @@ txagent()     { tx_ai cli "$@"; }
 airoute()     { tx_ai_route "$@"; }
 aimem()       { tx_ai_mem "$@"; }
 aiskill()     { tx_ai_skill "$@"; }
+txfull()      { _tx_ai_show_full "$@"; }
+txcompact()   { tx_ai compact "$@"; }
 /remember()   { _tx_ai_mem_add "$@"; }
 remember()    { _tx_ai_mem_add "$@"; }
 
@@ -4931,6 +5048,10 @@ hv_prompt() {
 # ---------------------------------------------------------------------
 if (return 0 2>/dev/null); then
   if [[ $- == *i* ]]; then
+    if [[ -t 0 ]]; then
+      stty discard undef 2>/dev/null || true
+      bind -x '"\C-o":"_tx_ai_show_full"' 2>/dev/null || true
+    fi
     if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
       [[ " ${PROMPT_COMMAND[*]} " == *" hv_prompt "* ]] || PROMPT_COMMAND=("hv_prompt" "${PROMPT_COMMAND[@]}")
     else
@@ -5022,6 +5143,8 @@ else
     aimem|mem)     tx_ai_mem "$@" ;;
     aiskill|skill) tx_ai_skill "$@" ;;
     remember|/remember) _tx_ai_mem_add "$@" ;;
-    *) echo "usage: $0 {help|ai|/ai|airoute|aimem|aiskill|remember|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|txenv|txcron|txbench|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
+    full|txfull)   _tx_ai_show_full "$@" ;;
+    compact|txcompact) tx_ai compact "$@" ;;
+    *) echo "usage: $0 {help|ai|/ai|airoute|aimem|aiskill|remember|txfull|txcompact|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|txenv|txcron|txbench|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
   esac
 fi
