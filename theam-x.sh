@@ -1304,8 +1304,10 @@ ${TX_CA}Small AI Assistant (/ai | txagent | airoute | aimem | aiskill)${TX_CX}
   aiskill [list|install|use]  Install/manage AGY SKILL.md packs (built-in / GitHub / URL)
   airoute [add|use|list|auto] Multi-provider routes & mood auto-routing
   airotate [on|off|add|next]  Auto-rotate models & routes on HTTP 429/quota/5xx
+  aipreset [list|zen|groq]    Quick-switch free AI presets (OpenCode Zen Free, etc.)
+  aiconfig [menu|edit|show]   Edit ~/.sino/ai.conf interactively or in $EDITOR
   aimem [add|list|search|del] Persistent AGY-style memory (/remember <fact>)
-  /ai config | status | test  Configure base_url / api_key / model / type / etcs
+  /ai zen [sync]              Configure OpenCode Zen & sync all live free models
   Ctrl+O | txfull | /full     Expand/view full last AI or command output
   /ai compact <on|off>        Toggle compact output (default: on, hides curl/log spam)
 
@@ -2322,6 +2324,8 @@ _tx_ai_wizard() {
   _tx_ai_load
   [[ -t 0 && -t 1 ]] || {
     _tx_err "/ai is not configured. Configure with:"
+    echo "  /ai preset zen              # OpenCode Zen Free (all free models)"
+    echo "  /ai preset <openrouter|groq|gemini|nvidia|mistral|cerebras|github>"
     echo "  /ai set type openai|gemini|anthropic|ollama"
     echo "  /ai set base_url <url>"
     echo "  /ai set api_key <key>"
@@ -2330,15 +2334,20 @@ _tx_ai_wizard() {
   }
 
   printf '\n%s=== /ai SETUP WIZARD ===%s\n' "$TX_C2" "$TX_CX"
-  echo "  [1] openai    (OpenAI, Groq, OpenRouter, DeepSeek, Together, vLLM)"
+  echo "  [0] preset    (OpenCode Zen Free, OpenRouter Free, Groq, Gemini, NVIDIA, etc.)"
+  echo "  [1] openai    (OpenAI, OpenCode Zen, Groq, OpenRouter, DeepSeek, vLLM)"
   echo "  [2] gemini    (Google Gemini REST API)"
   echo "  [3] anthropic (Anthropic Claude API)"
   echo "  [4] ollama    (Local Ollama server)"
 
   local cur_type="${TX_AI_TYPE:-openai}" ans=""
-  printf '%sProvider type [%s]: %s' "$TX_CY" "$cur_type" "$TX_CX"
+  printf '%sProvider type or 0 for preset [%s]: %s' "$TX_CY" "$cur_type" "$TX_CX"
   read -r ans </dev/tty
   ans="${ans:-$cur_type}"
+  if [[ "$ans" == 0 || "$ans" == preset || "$ans" == zen ]]; then
+    tx_ai_preset
+    return $?
+  fi
   case "$ans" in
     1) ans="openai" ;;
     2) ans="gemini" ;;
@@ -3023,9 +3032,26 @@ _tx_ai_default_rotate_models() {
   case "$t" in
     gemini)    printf '%s\n' gemini-2.5-flash gemini-2.5-flash-lite gemini-2.0-flash gemini-2.0-flash-lite gemini-1.5-flash ;;
     openai)
-      if [[ -z $u || "$u" == *api.openai.com* ]]; then
-        printf '%s\n' gpt-4o-mini gpt-4.1-mini gpt-4.1-nano gpt-4o
-      fi
+      case "$u" in
+        *opencode.ai/zen*|*opencode.ai/inference*)
+          printf '%s\n' big-pickle mimo-v2.6-flash-free deepseek-v4.1-flash-free nemotron-3.5-lightning-free nemotron-3.5-super-vl-free hy4-flash-free iceman-free beam-free flint-40b-free seaglass-alpha-free ;;
+        *openrouter.ai*)
+          printf '%s\n' meta-llama/llama-3.3-70b-instruct:free deepseek/deepseek-r1:free qwen/qwen-2.5-72b-instruct:free google/gemini-2.0-flash-exp:free mistralai/mistral-small-3.1-24b-instruct:free ;;
+        *api.groq.com*)
+          printf '%s\n' llama-3.3-70b-versatile llama-3.1-8b-instant qwen/qwen3-32b gemma2-9b-it ;;
+        *integrate.api.nvidia.com*)
+          printf '%s\n' meta/llama-3.3-70b-instruct deepseek-ai/deepseek-v3.2 qwen/qwen2.5-coder-32b-instruct ;;
+        *api.mistral.ai*)
+          printf '%s\n' mistral-small-latest open-mistral-nemo codestral-latest ;;
+        *api.cerebras.ai*)
+          printf '%s\n' llama-3.3-70b llama3.1-8b ;;
+        *models.inference.ai.azure.com*|*models.github.ai*)
+          printf '%s\n' gpt-4o-mini gpt-4o DeepSeek-R1 Meta-Llama-3.3-70B-Instruct ;;
+        *api.deepseek.com*)
+          printf '%s\n' deepseek-chat deepseek-reasoner ;;
+        *api.openai.com*|"")
+          printf '%s\n' gpt-4o-mini gpt-4.1-mini gpt-4.1-nano gpt-4o ;;
+      esac
       ;;
     anthropic) printf '%s\n' claude-3-5-haiku-latest claude-3-5-sonnet-latest ;;
   esac
@@ -3068,7 +3094,7 @@ _tx_ai_is_rotatable_err() {
       [[ "$msg" =~ (model|not[[:space:]]+found|not[[:space:]]+supported|deprecated) ]] && return 0
       ;;
   esac
-  [[ "$msg" =~ (quota|rate.?limit|resource_exhausted|too[[:space:]]+many[[:space:]]+requests|overloaded|capacity|model.*not[[:space:]]+found|not[[:space:]]+supported|deprecated|temporarily[[:space:]]+unavailable|try[[:space:]]+again|exceeded) ]]
+  [[ "$msg" =~ (quota|rate.?limit|resource_exhausted|too[[:space:]]+many[[:space:]]+requests|overloaded|capacity|model.*not[[:space:]]+found|not[[:space:]]+supported|deprecated|temporarily[[:space:]]+unavailable|try[[:space:]]+again|exceeded|usage[[:space:]]+limit|freeusagelimit|limit[[:space:]]+reached) ]]
 }
 
 _tx_ai_build_candidates() {
@@ -3236,6 +3262,365 @@ EOF
       ;;
     *)
       _tx_err "unknown subcommand '$sub'. Run: airotate --help"
+      return 1
+      ;;
+  esac
+}
+
+_tx_ai_zen_sync_models() {
+  # Fetches live free chat-completions models from OpenCode Zen (comma-separated on stdout)
+  local raw="" url="${1:-https://opencode.ai/zen/v1/models}"
+  if command -v curl >/dev/null 2>&1; then
+    raw=$(curl -fsSL --max-time 8 "$url" 2>/dev/null || true)
+  elif command -v wget >/dev/null 2>&1; then
+    raw=$(wget -qO- -T 8 "$url" 2>/dev/null || true)
+  fi
+  local list=""
+  if [[ -n $raw ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      list=$(printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    ids = []
+    for m in d.get("data", []):
+        mid = m.get("id", "")
+        api = m.get("recommended_api", "")
+        pin = m.get("cost", {}).get("text", {}).get("input", {}).get("price", -1)
+        if mid and (pin == 0 or mid.endswith("-free")) and api in ("chat-completions", ""):
+            ids.append(mid)
+    print(",".join(ids))
+except Exception:
+    pass
+' 2>/dev/null || true)
+    else
+      list=$(printf '%s' "$raw" | grep -oE '"id":"([^"]*-free|big-pickle)"' | sed 's/"id":"//;s/"$//' | paste -sd, - 2>/dev/null || true)
+    fi
+  fi
+  [[ -n $list ]] || list="big-pickle,mimo-v2.6-flash-free,deepseek-v4.1-flash-free,nemotron-3.5-lightning-free,nemotron-3.5-super-vl-free,hy4-flash-free,iceman-free,beam-free,flint-40b-free,seaglass-alpha-free"
+  printf '%s' "$list"
+}
+
+_tx_ai_preset_table() {
+  printf '%s\n' \
+    "zen|openai|https://opencode.ai/zen/v1|big-pickle|public|OpenCode Zen Free (all free models, auto-rotate)" \
+    "openrouter|openai|https://openrouter.ai/api/v1|meta-llama/llama-3.3-70b-instruct:free||OpenRouter Free (:free models)" \
+    "groq|openai|https://api.groq.com/openai/v1|llama-3.3-70b-versatile||Groq Fast Free Tier" \
+    "gemini|gemini|https://generativelanguage.googleapis.com/v1beta|gemini-2.5-flash||Google Gemini Free Tier" \
+    "nvidia|openai|https://integrate.api.nvidia.com/v1|meta/llama-3.3-70b-instruct||NVIDIA NIM Free Credits" \
+    "mistral|openai|https://api.mistral.ai/v1|mistral-small-latest||Mistral La Plateforme Free" \
+    "cerebras|openai|https://api.cerebras.ai/v1|llama-3.3-70b||Cerebras Free Fast Inference" \
+    "github|openai|https://models.inference.ai.azure.com|gpt-4o-mini||GitHub Models Free" \
+    "deepseek|openai|https://api.deepseek.com/v1|deepseek-chat||DeepSeek API" \
+    "openai|openai|https://api.openai.com/v1|gpt-4o-mini||OpenAI Official" \
+    "anthropic|anthropic|https://api.anthropic.com/v1|claude-3-5-haiku-latest||Anthropic Claude" \
+    "ollama|ollama|http://127.0.0.1:11434|llama3.2||Ollama Local (no API key)"
+}
+
+_tx_ai_apply_preset() {
+  _tx_ai_load
+  local name="${1,,}" key_arg="${2:-}"
+  case "$name" in
+    opencode|opencode-zen|zen-free|1) name="zen" ;;
+    openrouter-free|or|2) name="openrouter" ;;
+    groq-free|3) name="groq" ;;
+    google|4) name="gemini" ;;
+    nim|5) name="nvidia" ;;
+    6) name="mistral" ;;
+    7) name="cerebras" ;;
+    gh|github-models|8) name="github" ;;
+    9) name="deepseek" ;;
+    10) name="openai" ;;
+    claude|11) name="anthropic" ;;
+    local|12) name="ollama" ;;
+  esac
+
+  local row pn pt pu pm pk pd matched=""
+  while IFS='|' read -r pn pt pu pm pk pd; do
+    if [[ "$pn" == "$name" ]]; then
+      matched=1; break
+    fi
+  done < <(_tx_ai_preset_table)
+  [[ -n $matched ]] || { _tx_err "unknown preset '$name'. Run: aipreset list"; return 1; }
+
+  TX_AI_TYPE="$pt"
+  TX_AI_BASE_URL="$pu"
+  TX_AI_MODEL="$pm"
+  TX_AI_ROTATE=1
+
+  if [[ -n $key_arg ]]; then
+    TX_AI_API_KEY="$key_arg"
+  elif [[ "$pn" == "zen" ]]; then
+    if [[ -t 0 && -t 1 && "${TX_AI_NONINTERACTIVE:-0}" != 1 ]]; then
+      local cur_hint="public" ans=""
+      [[ -n ${TX_AI_API_KEY:-} && "$TX_AI_API_KEY" != "public" ]] && cur_hint="keep $(_tx_ai_mask_key "$TX_AI_API_KEY") or enter 'public'"
+      printf '%sOpenCode Zen API Key [%s]: %s' "$TX_CY" "$cur_hint" "$TX_CX"
+      read -r ans </dev/tty
+      if [[ -n $ans ]]; then TX_AI_API_KEY="$ans"
+      elif [[ -z ${TX_AI_API_KEY:-} ]]; then TX_AI_API_KEY="public"; fi
+    else
+      [[ -z ${TX_AI_API_KEY:-} || "${key_arg}" == "public" ]] && TX_AI_API_KEY="public"
+    fi
+  elif [[ "$pt" == "ollama" ]]; then
+    TX_AI_API_KEY=""
+  elif [[ -t 0 && -t 1 && "${TX_AI_NONINTERACTIVE:-0}" != 1 ]]; then
+    local kh="required" ans=""
+    [[ -n ${TX_AI_API_KEY:-} ]] && kh="Enter to keep $(_tx_ai_mask_key "$TX_AI_API_KEY")"
+    printf '%sAPI Key for %s (%s): %s' "$TX_CY" "$pn" "$kh" "$TX_CX"
+    read -rs ans </dev/tty; echo
+    [[ -n $ans ]] && TX_AI_API_KEY="$ans"
+  fi
+
+  if [[ "$pn" == "zen" ]]; then
+    local zmodels
+    zmodels=$(_tx_ai_zen_sync_models)
+    TX_AI_ROTATE_MODELS="$zmodels"
+    TX_AI_MODEL="${zmodels%%,*}"
+    [[ -n $TX_AI_MODEL ]] || TX_AI_MODEL="$pm"
+  else
+    local -a defs=()
+    local dm
+    while IFS= read -r dm; do
+      [[ -n $dm ]] && defs+=("$dm")
+    done < <(_tx_ai_default_rotate_models "$pt" "$pu")
+    local IFS=,
+    TX_AI_ROTATE_MODELS="${defs[*]}"
+  fi
+
+  rm -f "$TX_HOME/.rotate_cooldown"
+  _tx_ai_save || return 1
+  _tx_say "preset '${pn}' active -> ${TX_AI_MODEL} (${TX_AI_BASE_URL})"
+  [[ -n $TX_AI_ROTATE_MODELS ]] && printf '%s[*]%s rotation pool: %s\n' "$TX_CD" "$TX_CX" "$TX_AI_ROTATE_MODELS"
+}
+
+tx_ai_preset() {
+  local sub="${1:-}"
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: aipreset | /ai preset [name] [api_key]
+  aipreset                 Interactive preset picker / list
+  aipreset list            List all free & supported presets
+  aipreset zen [key]       OpenCode Zen Free + sync all live free models
+  aipreset openrouter      OpenRouter (:free models)
+  aipreset groq            Groq fast free tier
+  aipreset gemini          Google Gemini free tier
+  aipreset nvidia          NVIDIA NIM free models
+  aipreset mistral         Mistral free tier
+  aipreset cerebras        Cerebras fast free inference
+  aipreset github          GitHub Models free tier
+  aipreset deepseek        DeepSeek API
+  aipreset openai|anthropic|ollama
+EOF
+      return 0
+      ;;
+    sync|zen-sync)
+      _tx_ai_load
+      local zmodels
+      zmodels=$(_tx_ai_zen_sync_models)
+      TX_AI_ROTATE_MODELS="$zmodels"
+      TX_AI_ROTATE=1
+      _tx_ai_save
+      _tx_say "synced OpenCode Zen free models -> ${zmodels}"
+      return 0
+      ;;
+    list|"")
+      printf '\n%s=== AI PROVIDER PRESETS (OpenCode Zen Free & More) ===%s\n' "$TX_C2" "$TX_CX"
+      local row pn pt pu pm pk pd i=1
+      while IFS='|' read -r pn pt pu pm pk pd; do
+        printf '  %s[%2d]%s %-11s %-9s %-32s %s%s%s\n' "$TX_C2" "$i" "$TX_CX" "$pn" "$pt" "$pm" "$TX_CD" "$pd" "$TX_CX"
+        (( i++ ))
+      done < <(_tx_ai_preset_table)
+      echo
+      if [[ -z $sub && -t 0 && -t 1 ]]; then
+        printf '%sPick [1-12 / name / Enter=cancel]: %s' "$TX_CY" "$TX_CX"
+        local ans=""
+        read -r ans </dev/tty 2>/dev/null || ans=""
+        [[ -n $ans ]] && _tx_ai_apply_preset "$ans"
+      fi
+      return 0
+      ;;
+    *)
+      _tx_ai_apply_preset "$@"
+      ;;
+  esac
+}
+
+_tx_ai_set_kv() {
+  local k="${1:-}" v="${2:-}"
+  _tx_ai_load
+  case "$k" in
+    type|TX_AI_TYPE)
+      _tx_in_list "$v" "${TX_AI_TYPES[@]}" || { _tx_err "type must be: ${TX_AI_TYPES[*]}"; return 1; }
+      TX_AI_TYPE="$v"
+      [[ -z $TX_AI_BASE_URL ]] && TX_AI_BASE_URL=$(_tx_ai_default_url "$v")
+      [[ -z $TX_AI_MODEL ]]    && TX_AI_MODEL=$(_tx_ai_default_model "$v")
+      ;;
+    base_url|url|TX_AI_BASE_URL)          TX_AI_BASE_URL="${v%/}" ;;
+    api_key|api|key|TX_AI_API_KEY)        TX_AI_API_KEY="$v" ;;
+    model|TX_AI_MODEL)                    TX_AI_MODEL="$v" ;;
+    system|TX_AI_SYSTEM)                  TX_AI_SYSTEM="$v" ;;
+    temp|temperature|TX_AI_TEMP)          TX_AI_TEMP="$v" ;;
+    max_tokens|tokens|TX_AI_MAX_TOKENS)   TX_AI_MAX_TOKENS="$v" ;;
+    timeout|TX_AI_TIMEOUT)                TX_AI_TIMEOUT="$v" ;;
+    mood|TX_AI_MOOD)
+      _tx_in_list "$v" "${TX_AI_MOODS[@]}" || { _tx_err "mood must be: ${TX_AI_MOODS[*]}"; return 1; }
+      TX_AI_MOOD="$v"
+      ;;
+    auto|TX_AI_AUTO)
+      case "$v" in
+        on|1|yolo|true) TX_AI_AUTO="on" ;;
+        safe)           TX_AI_AUTO="safe" ;;
+        off|0|false)    TX_AI_AUTO="off" ;;
+        *) _tx_err "auto must be off|safe|on"; return 1 ;;
+      esac
+      ;;
+    compact|TX_AI_COMPACT)
+      case "$v" in
+        on|1|true)  TX_AI_COMPACT=1 ;;
+        off|0|false) TX_AI_COMPACT=0 ;;
+        *) _tx_err "compact must be on|off"; return 1 ;;
+      esac
+      ;;
+    rotate|TX_AI_ROTATE)
+      case "$v" in
+        on|1|true)  TX_AI_ROTATE=1 ;;
+        off|0|false) TX_AI_ROTATE=0 ;;
+        *) _tx_err "rotate must be on|off"; return 1 ;;
+      esac
+      ;;
+    rotate_models|models|TX_AI_ROTATE_MODELS) TX_AI_ROTATE_MODELS="${v// /,}" ;;
+    *) _tx_err "unknown key '$k'"; return 1 ;;
+  esac
+  _tx_ai_save && _tx_say "/ai ${k} saved"
+}
+
+tx_ai_config() {
+  _tx_ai_load
+  local sub="${1:-}"
+  if [[ -z $sub ]]; then
+    if ! _tx_ai_is_configured; then
+      _tx_ai_wizard
+      return $?
+    elif [[ -t 0 && -t 1 ]]; then
+      sub="menu"
+    else
+      sub="show"
+    fi
+  fi
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: aiconfig | /ai config [subcommand]
+  aiconfig                    Interactive AI config editor (or setup wizard on first run)
+  aiconfig menu               Edit individual fields interactively (model, key, url, preset, rotate...)
+  aiconfig edit               Open ~/.sino/ai.conf directly in $EDITOR (nano/vi) with syntax check
+  aiconfig wizard             Run full step-by-step setup wizard
+  aiconfig show               Show active AI config (API key masked)
+  aiconfig raw                Print ~/.sino/ai.conf contents
+  aiconfig get <key>          Get current value (e.g. model, base_url, rotate_models)
+  aiconfig set <key> <value>  Update a field cleanly
+  aiconfig preset [name]      Apply OpenCode Zen Free or other free presets
+  aiconfig reset              Remove ~/.sino/ai.conf
+EOF
+      return 0
+      ;;
+    show|status) _tx_ai_status ;;
+    raw|cat)
+      [[ -f "$TX_HOME/ai.conf" ]] || _tx_ai_save
+      printf '%sAI Config file:%s %s\n\n' "$TX_CA" "$TX_CX" "$TX_HOME/ai.conf"
+      cat "$TX_HOME/ai.conf"
+      ;;
+    edit|nano|vi)
+      [[ -f "$TX_HOME/ai.conf" ]] || _tx_ai_save
+      chmod 600 "$TX_HOME/ai.conf" 2>/dev/null || true
+      local ed="${EDITOR:-}"
+      [[ -z $ed ]] && { command -v nano >/dev/null 2>&1 && ed=nano || ed=vi; }
+      "$ed" "$TX_HOME/ai.conf"
+      chmod 600 "$TX_HOME/ai.conf" 2>/dev/null || true
+      if bash -n "$TX_HOME/ai.conf" 2>/dev/null; then
+        _tx_ai_load
+        _tx_say "AI config validated & reloaded"
+      else
+        _tx_err "syntax error in $TX_HOME/ai.conf — please fix it"
+        return 1
+      fi
+      ;;
+    wizard|setup)
+      _tx_ai_wizard
+      ;;
+    preset|presets)
+      shift
+      tx_ai_preset "$@"
+      ;;
+    get)
+      local k="${2:-}"
+      [[ -n $k ]] || { _tx_err "usage: aiconfig get <key>"; return 1; }
+      case "$k" in
+        type|TX_AI_TYPE)                 printf '%s\n' "${TX_AI_TYPE:-}" ;;
+        base_url|url|TX_AI_BASE_URL)     printf '%s\n' "${TX_AI_BASE_URL:-}" ;;
+        api_key|api|key|TX_AI_API_KEY)   printf '%s\n' "$(_tx_ai_mask_key "${TX_AI_API_KEY:-}")" ;;
+        model|TX_AI_MODEL)               printf '%s\n' "${TX_AI_MODEL:-}" ;;
+        system|TX_AI_SYSTEM)             printf '%s\n' "${TX_AI_SYSTEM:-}" ;;
+        temp|TX_AI_TEMP)                 printf '%s\n' "${TX_AI_TEMP:-0.7}" ;;
+        max_tokens|tokens|TX_AI_MAX_TOKENS) printf '%s\n' "${TX_AI_MAX_TOKENS:-8192}" ;;
+        timeout|TX_AI_TIMEOUT)           printf '%s\n' "${TX_AI_TIMEOUT:-45}" ;;
+        mood|TX_AI_MOOD)                 printf '%s\n' "${TX_AI_MOOD:-fast}" ;;
+        auto|TX_AI_AUTO)                 printf '%s\n' "${TX_AI_AUTO:-off}" ;;
+        compact|TX_AI_COMPACT)           printf '%s\n' "${TX_AI_COMPACT:-1}" ;;
+        rotate|TX_AI_ROTATE)             printf '%s\n' "${TX_AI_ROTATE:-1}" ;;
+        rotate_models|models|TX_AI_ROTATE_MODELS) printf '%s\n' "${TX_AI_ROTATE_MODELS:-}" ;;
+        *) _tx_err "unknown key '$k'"; return 1 ;;
+      esac
+      ;;
+    set)
+      local k="${2:-}"
+      [[ -n $k && $# -ge 3 ]] || { _tx_err "usage: aiconfig set <key> <value>"; return 1; }
+      shift 2
+      _tx_ai_set_kv "$k" "$*"
+      ;;
+    reset)
+      rm -f "$TX_HOME/ai.conf" "$TX_HOME/.rotate_cooldown"
+      _tx_say "removed $TX_HOME/ai.conf"
+      ;;
+    menu)
+      [[ -t 0 && -t 1 ]] || { _tx_ai_status; return 0; }
+      local pick="" val=""
+      while true; do
+        _tx_ai_load
+        printf '\n%s=== EDIT AI CONFIG (%s) ===%s\n' "$TX_C2" "$TX_HOME/ai.conf" "$TX_CX"
+        printf '  [1] Type          : %s\n' "${TX_AI_TYPE:-unset}"
+        printf '  [2] Base URL      : %s\n' "${TX_AI_BASE_URL:-unset}"
+        printf '  [3] API Key       : %s\n' "$(_tx_ai_mask_key "${TX_AI_API_KEY:-}")"
+        printf '  [4] Model         : %s\n' "${TX_AI_MODEL:-unset}"
+        printf '  [5] Rotate        : %s\n' "$([[ ${TX_AI_ROTATE:-1} == 1 ]] && echo on || echo off)"
+        printf '  [6] Rotate Models : %s\n' "${TX_AI_ROTATE_MODELS:-"(auto default)"}"
+        printf '  [7] Mood          : %s\n' "${TX_AI_MOOD:-fast}"
+        printf '  [8] Auto-Approve  : %s\n' "${TX_AI_AUTO:-off}"
+        printf '  [9] Compact Out   : %s\n' "$([[ ${TX_AI_COMPACT:-1} == 1 ]] && echo on || echo off)"
+        printf '  [p] Switch Preset   [e] Edit ai.conf in editor   [w] Setup Wizard   [t] Test   [q] Done\n'
+        printf '%sSelect option: %s' "$TX_CY" "$TX_CX"
+        read -r pick </dev/tty 2>/dev/null || break
+        case "$pick" in
+          1) printf 'Type (openai|gemini|anthropic|ollama): '; read -r val </dev/tty; [[ -n $val ]] && _tx_ai_set_kv type "$val" ;;
+          2) printf 'Base URL: '; read -r val </dev/tty; [[ -n $val ]] && _tx_ai_set_kv base_url "$val" ;;
+          3) printf 'API Key: '; read -rs val </dev/tty; echo; [[ -n $val ]] && _tx_ai_set_kv api_key "$val" ;;
+          4) printf 'Model: '; read -r val </dev/tty; [[ -n $val ]] && _tx_ai_set_kv model "$val" ;;
+          5) TX_AI_ROTATE=$(( 1 - ${TX_AI_ROTATE:-1} )); _tx_ai_save && _tx_say "rotate -> $([[ $TX_AI_ROTATE == 1 ]] && echo on || echo off)" ;;
+          6) printf 'Rotate Models (comma-separated): '; read -r val </dev/tty; _tx_ai_set_kv rotate_models "$val" ;;
+          7) printf 'Mood (%s): ' "${TX_AI_MOODS[*]}"; read -r val </dev/tty; [[ -n $val ]] && _tx_ai_set_kv mood "$val" ;;
+          8) printf 'Auto-Approve (off|safe|on): '; read -r val </dev/tty; [[ -n $val ]] && _tx_ai_set_kv auto "$val" ;;
+          9) TX_AI_COMPACT=$(( 1 - ${TX_AI_COMPACT:-1} )); _tx_ai_save && _tx_say "compact -> $([[ $TX_AI_COMPACT == 1 ]] && echo on || echo off)" ;;
+          p|P) tx_ai_preset ;;
+          e|E) tx_ai_config edit ;;
+          w|W) _tx_ai_wizard ;;
+          t|T) _tx_ai_test ;;
+          q|Q|"") break ;;
+        esac
+      done
+      ;;
+    *)
+      _tx_err "unknown subcommand '$sub'. Run: aiconfig --help"
       return 1
       ;;
   esac
@@ -4534,7 +4919,27 @@ _tx_ai_chat() {
         continue
         ;;
       /config)
-        _tx_ai_wizard
+        tx_ai_config
+        _tx_ai_load
+        continue
+        ;;
+      /config\ *|/conf|/conf\ *)
+        tx_ai_config ${line#/* }
+        [[ "$line" == /conf || "$line" == /config ]] && tx_ai_config edit
+        _tx_ai_load
+        continue
+        ;;
+      /preset|/preset\ *)
+        tx_ai_preset ${line#/preset}
+        _tx_ai_load
+        continue
+        ;;
+      /zen|/zen\ *)
+        if [[ "$line" == "/zen sync" ]]; then
+          tx_ai_preset sync
+        else
+          tx_ai_preset zen ${line#/zen}
+        fi
         _tx_ai_load
         continue
         ;;
@@ -4741,8 +5146,10 @@ Usage: /ai [-y] [option | prompt]
   /ai remember <fact>         Save fact to memory (also: /remember <fact>)
   /ai compact <on|off>        Compact command output mode (default: on; also: txcompact)
   /ai full                    Show full last command output (also: Ctrl+O | txfull | /full)
-  /ai config | setup          Configure type, base_url, api_key, model, temp, tokens, system
-  /ai set <key> <value>       Set: type | base_url | api_key | model | system | temp | max_tokens | timeout
+  /ai config [menu|edit|show] Edit ~/.sino/ai.conf interactively or in $EDITOR (also: aiconfig)
+  /ai preset [name]           Apply free presets (zen, openrouter, groq, gemini, nvidia, mistral, cerebras, github)
+  /ai zen [sync]              One-step OpenCode Zen Free setup & live free-model sync
+  /ai get | set <key> [val]   Get or set: type|base_url|api_key|model|rotate|rotate_models|mood|auto|compact
   /ai status | show           Show active AI settings (API key masked)
   /ai test                    Test API connectivity
   /ai reset                   Remove ~/.sino/ai.conf
@@ -4771,8 +5178,27 @@ EOF
       tx_ai_skill "$@"
       return $?
       ;;
-    config|setup)
+    config|conf)
+      shift
+      tx_ai_config "$@"
+      return $?
+      ;;
+    setup)
       _tx_ai_wizard
+      return $?
+      ;;
+    preset|presets)
+      shift
+      tx_ai_preset "$@"
+      return $?
+      ;;
+    zen)
+      if [[ "${2:-}" == "sync" ]]; then
+        tx_ai_preset sync
+      else
+        shift
+        tx_ai_preset zen "$@"
+      fi
       return $?
       ;;
     status|show)
@@ -4817,32 +5243,11 @@ EOF
       local k="${2:-}"
       [[ -n $k && $# -ge 3 ]] || { _tx_err "usage: /ai set <type|base_url|api_key|model|system|temp|max_tokens|timeout|rotate|rotate_models> <value>"; return 1; }
       shift 2
-      local v="$*"
-      case "$k" in
-        type)
-          _tx_in_list "$v" "${TX_AI_TYPES[@]}" || { _tx_err "type must be: ${TX_AI_TYPES[*]}"; return 1; }
-          TX_AI_TYPE="$v"
-          [[ -z $TX_AI_BASE_URL ]] && TX_AI_BASE_URL=$(_tx_ai_default_url "$v")
-          [[ -z $TX_AI_MODEL ]]    && TX_AI_MODEL=$(_tx_ai_default_model "$v")
-          ;;
-        base_url|url)     TX_AI_BASE_URL="${v%/}" ;;
-        api_key|api|key)  TX_AI_API_KEY="$v" ;;
-        model)            TX_AI_MODEL="$v" ;;
-        system)           TX_AI_SYSTEM="$v" ;;
-        temp|temperature) TX_AI_TEMP="$v" ;;
-        max_tokens|tokens) TX_AI_MAX_TOKENS="$v" ;;
-        timeout)          TX_AI_TIMEOUT="$v" ;;
-        rotate)
-          case "$v" in
-            on|1|true)  TX_AI_ROTATE=1 ;;
-            off|0|false) TX_AI_ROTATE=0 ;;
-            *) _tx_err "rotate must be on or off"; return 1 ;;
-          esac
-          ;;
-        rotate_models|models) TX_AI_ROTATE_MODELS="${v// /,}" ;;
-        *) _tx_err "unknown key '$k'"; return 1 ;;
-      esac
-      _tx_ai_save && _tx_say "/ai ${k} saved"
+      _tx_ai_set_kv "$k" "$*"
+      return $?
+      ;;
+    get)
+      tx_ai_config get "${2:-}"
       return $?
       ;;
     cli|txagent)
@@ -5150,17 +5555,23 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route rotate models mood mem remember compact full config setup status show test set reset -y -c cmd --help"
+        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route rotate models preset zen mood mem remember compact full config conf setup status show test get set reset -y -c cmd --help"
       elif [[ "$prev" == auto ]]; then
         words="off safe on status"
       elif [[ "$prev" == compact ]]; then
         words="on off"
+      elif [[ "$prev" == config || "$prev" == conf ]]; then
+        words="menu edit wizard show raw get set preset reset"
+      elif [[ "$prev" == preset || "$prev" == presets ]]; then
+        words="list zen openrouter groq gemini nvidia mistral cerebras github deepseek openai anthropic ollama sync"
+      elif [[ "$prev" == zen ]]; then
+        words="sync"
       elif [[ "$prev" == rotate || "$prev" == models ]]; then
         words="status on off add set clear next"
       elif [[ "$prev" == skill || "$prev" == skills ]]; then
         words="list install create show use off remove auto"
-      elif [[ "$prev" == set ]]; then
-        words="type base_url api_key model system temp max_tokens timeout rotate rotate_models"
+      elif [[ "$prev" == set || "$prev" == get ]]; then
+        words="type base_url api_key model system temp max_tokens timeout rotate rotate_models mood auto compact"
       elif [[ "$prev" == type ]]; then
         words="openai gemini anthropic ollama"
       elif [[ "$prev" == mood ]]; then
@@ -5194,6 +5605,16 @@ _tx_subcmd_complete() {
       ;;
     airotate|aimodels)
       (( COMP_CWORD == 1 )) && words="status on off add set clear next"
+      ;;
+    aipreset)
+      (( COMP_CWORD == 1 )) && words="list zen openrouter groq gemini nvidia mistral cerebras github deepseek openai anthropic ollama sync"
+      ;;
+    aiconfig|txaiconfig)
+      if (( COMP_CWORD == 1 )); then
+        words="menu edit wizard show raw get set preset reset"
+      elif [[ "$prev" == set || "$prev" == get ]]; then
+        words="type base_url api_key model system temp max_tokens timeout rotate rotate_models mood auto compact"
+      fi
       ;;
     aimem)
       if (( COMP_CWORD == 1 )); then
@@ -5252,7 +5673,7 @@ _tx_register_complete() {
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
     ssh python python3 py py3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
-    txtheme txconfig sfetch Sfetch svc txwake txcompact dns txclean sysup txlog txssh txcron /ai ai txai airoute airotate aimodels aimem aiskill 2>/dev/null || true
+    txtheme txconfig sfetch Sfetch svc txwake txcompact dns txclean sysup txlog txssh txcron /ai ai txai airoute airotate aimodels aipreset aiconfig txaiconfig aimem aiskill 2>/dev/null || true
 }
 _tx_register_complete
 
@@ -5306,6 +5727,10 @@ txagent()     { tx_ai cli "$@"; }
 airoute()     { tx_ai_route "$@"; }
 airotate()    { tx_ai_rotate "$@"; }
 aimodels()    { tx_ai_rotate "$@"; }
+aipreset()    { tx_ai_preset "$@"; }
+aizen()       { if [[ "${1:-}" == "sync" ]]; then tx_ai_preset sync; else tx_ai_preset zen "$@"; fi; }
+aiconfig()    { tx_ai_config "$@"; }
+txaiconfig()  { tx_ai_config "$@"; }
 aimem()       { tx_ai_mem "$@"; }
 aiskill()     { tx_ai_skill "$@"; }
 txfull()      { _tx_ai_show_full "$@"; }
@@ -5488,11 +5913,14 @@ else
     txagent|cli)   tx_ai cli "$@" ;;
     airoute|route) tx_ai_route "$@" ;;
     airotate|aimodels|rotate) tx_ai_rotate "$@" ;;
+    aipreset|preset) tx_ai_preset "$@" ;;
+    aizen|zen)     if [[ "${1:-}" == "sync" ]]; then tx_ai_preset sync; else tx_ai_preset zen "$@"; fi ;;
+    aiconfig|txaiconfig) tx_ai_config "$@" ;;
     aimem|mem)     tx_ai_mem "$@" ;;
     aiskill|skill) tx_ai_skill "$@" ;;
     remember|/remember) _tx_ai_mem_add "$@" ;;
     full|txfull)   _tx_ai_show_full "$@" ;;
     compact|txcompact) tx_ai compact "$@" ;;
-    *) echo "usage: $0 {help|ai|/ai|airoute|aimem|aiskill|remember|txfull|txcompact|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|txenv|txcron|txbench|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
+    *) echo "usage: $0 {help|ai|/ai|airoute|airotate|aipreset|aizen|aiconfig|aimem|aiskill|remember|txfull|txcompact|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|txenv|txcron|txbench|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
   esac
 fi
