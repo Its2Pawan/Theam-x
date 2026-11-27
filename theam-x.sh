@@ -67,15 +67,18 @@ hv_leave() { printf '%s' "${E}[?1049l${E}[?7h${E}[?25h${X}"; IN_ALT=0; }
 hv_size() {
   local r c
   read -r r c < <(stty size 2>/dev/null)
-  ROWS=${r:-$(tput lines 2>/dev/null || echo 24)}
-  COLS=${c:-$(tput cols 2>/dev/null || echo 80)}
+  ROWS=${r:-0}; COLS=${c:-0}
+  (( ROWS > 0 )) || ROWS=$(tput lines 2>/dev/null || echo 24)
+  (( COLS > 0 )) || COLS=$(tput cols  2>/dev/null || echo 80)
+  ROWS=${ROWS:-24}; COLS=${COLS:-80}
   (( ROWS > 0 )) || ROWS=24
   (( COLS > 0 )) || COLS=80
 }
 
 hv_layout() {
   PW=$(( COLS - 2 )); (( PW > ${HV_WIDTH:-66} )) && PW=${HV_WIDTH:-66}
-  INNER=$(( PW - 2 ))
+  (( PW < 20 )) && PW=20
+  INNER=$(( PW - 2 )); (( INNER < 1 )) && INNER=1
   printf -v HL '%*s' "$INNER" ''; HL=${HL// /═}
   local c
   for ((c=1; c<=COLS; c++)); do
@@ -107,7 +110,7 @@ hv_check_resize() {
 
 hv_geometry() {
   PH=$(( ${#LINES[@]} + 2 ))
-  P_LEFT=$(( (COLS - PW) / 2 + 1 ))
+  P_LEFT=$(( (COLS - PW) / 2 + 1 )); (( P_LEFT < 1 )) && P_LEFT=1
   P_TOP=$(( (ROWS - PH) / 2 + 1 )); (( P_TOP < 1 )) && P_TOP=1
 }
 
@@ -116,7 +119,7 @@ hv_geometry() {
 # ---------------------------------------------------------------------
 hv_put() { # row col color char
   (( $1 < 1 || $1 > ROWS )) && return
-  (( $1 >= P_TOP && $1 < P_TOP + PH && $2 >= P_LEFT && $2 < P_LEFT + PW )) && return
+  (( PH > 0 && $1 >= P_TOP && $1 < P_TOP + PH && $2 >= P_LEFT && $2 < P_LEFT + PW )) && return
   BUF+="${E}[$1;$2H$3$4"
 }
 
@@ -147,19 +150,22 @@ hv_ln() { # colored_text plain_length
 
 hv_center() { # color text
   local t="${2:0:$INNER}" lp rp s1 s2
-  lp=$(( (INNER - ${#t}) / 2 )); rp=$(( INNER - ${#t} - lp ))
+  lp=$(( (INNER - ${#t}) / 2 )); (( lp < 0 )) && lp=0
+  rp=$(( INNER - ${#t} - lp )); (( rp < 0 )) && rp=0
   printf -v s1 '%*s' "$lp" ''; printf -v s2 '%*s' "$rp" ''
   LINES+=("${1}${s1}${t}${s2}")
 }
 
 hv_kv() { # label value
-  local v="${2:0:$(( INNER - 12 ))}" lab
+  local avail=$(( INNER - 12 )); (( avail < 1 )) && avail=1
+  local v="${2:0:$avail}" lab
   printf -v lab '%-9s' "$1"
   hv_ln " ${DIM}${lab} ${W}${v}" $(( 11 + ${#v} ))
 }
 
 hv_barline() { # label pct extra
   local p=$2 col bw=$(( INNER - 27 )) fill f e ex lab
+  (( bw < 4 )) && bw=4
   (( p > 100 )) && p=100; (( p < 0 )) && p=0
   col=$BR; (( p >= 60 )) && col=$Y; (( p >= 85 )) && col=$R
   fill=$(( p * bw / 100 ))
@@ -372,6 +378,7 @@ hv_build_boot() {
   local view=("${LOGS[@]}")
   (( CUR_ON )) && view+=("RUN|${CUR}")
   local n=${#view[@]} start=0 i shown=0 tag st t tw=$(( INNER - 8 ))
+  (( tw < 1 )) && tw=1
   (( n > LOGROWS )) && start=$(( n - LOGROWS ))
   for ((i=start; i<n; i++)); do
     st=${view[i]%%|*}; t="${view[i]#*|}"; t="${t:0:$tw}"
@@ -381,6 +388,7 @@ hv_build_boot() {
   for ((; shown<LOGROWS; shown++)); do hv_ln "" 0; done
   LINES+=("__SEP__")
   local bw=$(( INNER - 8 )) fill f e
+  (( bw < 4 )) && bw=4
   fill=$(( PCT * bw / 100 ))
   printf -v f '%*s' "$fill" ''; f=${f// /█}
   printf -v e '%*s' "$(( bw - fill ))" ''; e=${e// /░}
@@ -555,6 +563,13 @@ tx_version() {
 # ---------------------------------------------------------------------
 tx_bits() { local n=$1 s="" i; for ((i=1; i<=n; i++)); do s+=$(( RANDOM & 1 )); (( i % 4 == 0 && i < n )) && s+=" "; done; printf '%s' "$s"; }
 
+tx_cols() {
+  local c=""
+  if [[ -t 1 ]]; then c=$(tput cols 2>/dev/null); fi
+  [[ -z "$c" || "$c" -lt 1 ]] 2>/dev/null && c=80
+  printf '%s' "$c"
+}
+
 tx_sfetch() {
   local E=$'\e' g w d x
   g="${E}[1;92m"; w="${E}[1;97m"; d="${E}[0;32m"; x="${E}[0m"
@@ -610,7 +625,7 @@ tx_sfetch() {
 
   # keep lines inside the terminal width
   local cols maxv _v
-  cols=$(tput cols 2>/dev/null || echo 80); maxv=$(( cols - 30 )); (( maxv < 12 )) && maxv=12
+  cols=$(tx_cols); maxv=$(( cols - 30 )); (( maxv < 12 )) && maxv=12
   for _v in os model kern up pk shell term cpu mem disk ip; do printf -v "$_v" '%s' "${!_v:0:$maxv}"; done
 
   local ul pal i
@@ -619,19 +634,19 @@ tx_sfetch() {
 
   local -a info=(
     "${g}${user}${w}@${g}${host}"
-    "${d}${ul}"
-    "${g}OS       ${w}${os}"
-    "${g}Device   ${w}${model}"
-    "${g}Kernel   ${w}${kern}"
-    "${g}Uptime   ${w}${up}"
-    "${g}Packages ${w}${pk}"
-    "${g}Shell    ${w}${shell}"
-    "${g}Terminal ${w}${term}"
-    "${g}CPU      ${w}${cpu}"
-    "${g}Memory   ${w}${mem}"
-    "${g}Disk     ${w}${disk}"
-    "${g}IP       ${w}${ip}"
-    "${g}Theme    ${w}Theam-X v${ver} ${d}by ${TX_DEV_NAME}"
+    "${d}${ul}${x}"
+    "${g}OS       ${w}${os}${x}"
+    "${g}Device   ${w}${model}${x}"
+    "${g}Kernel   ${w}${kern}${x}"
+    "${g}Uptime   ${w}${up}${x}"
+    "${g}Packages ${w}${pk}${x}"
+    "${g}Shell    ${w}${shell}${x}"
+    "${g}Terminal ${w}${term}${x}"
+    "${g}CPU      ${w}${cpu}${x}"
+    "${g}Memory   ${w}${mem}${x}"
+    "${g}Disk     ${w}${disk}${x}"
+    "${g}IP       ${w}${ip}${x}"
+    "${g}Theme    ${w}Theam-X v${ver} ${d}by ${TX_DEV_NAME}${x}"
     ""
     "${pal}"
   )
@@ -653,7 +668,7 @@ LOGOEOF
   for ((i=0; i<n; i++)); do
     li=$(( i - off )); l=""
     (( li >= 0 && li < nl )) && l=${logo[li]}
-    printf '  %s%-15s%s  %s%s\n' "$g" "$l" "$x" "${info[i]}" "$x"
+    printf '  %s%-15s%s  %s\n' "$g" "$l" "$x" "${info[i]}"
   done
   echo
 }
@@ -664,22 +679,25 @@ LOGOEOF
 tx_dev() {
   local E=$'\e' g="${E}[1;92m" w="${E}[1;97m" d="${E}[0;32m" x="${E}[0m"
   local cols inner hl vw
-  cols=$(tput cols 2>/dev/null || echo 80)
+  cols=$(tx_cols)
   inner=$(( cols - 2 )); (( inner > 64 )) && inner=64; (( inner < 36 )) && inner=36
   printf -v hl '%*s' "$inner" ''; hl=${hl// /═}
-  vw=$(( inner - 10 ))
+  vw=$(( inner - 10 )); (( vw < 1 )) && vw=1
   local pause=0; [[ -t 1 ]] && pause=0.04
   _row() { # label value (long values wrap onto extra rows)
     local val="$2" lab="$1"
     [[ -z "$val" ]] && return
-    while [[ -n "$val" ]]; do
-      printf '%s║%s %s%-8s%s %s%-*s%s║\n' "$d" "$x" "$d" "$lab" "$x" "$w" "$vw" "${val:0:$vw}" "$d"
+    while :; do
+      printf '%s║%s %s%-8s%s %s%-*s%s%s║%s\n' \
+        "$d" "$x" "$d" "$lab" "$x" "$w" "$vw" "${val:0:$vw}" "$x" "$d" "$x"
       val=${val:$vw}; lab=""
+      [[ -z "$val" ]] && break
       sleep "$pause"
     done
   }
   local title="[ DEVELOPER INFO ]" lp rp s1 s2
-  lp=$(( (inner - ${#title}) / 2 )); rp=$(( inner - ${#title} - lp ))
+  lp=$(( (inner - ${#title}) / 2 )); (( lp < 0 )) && lp=0
+  rp=$(( inner - ${#title} - lp )); (( rp < 0 )) && rp=0
   printf -v s1 '%*s' "$lp" ''; printf -v s2 '%*s' "$rp" ''
   echo
   printf '%s╔%s╗%s\n' "$d" "$hl" "$x"
