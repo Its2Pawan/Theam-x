@@ -23,7 +23,13 @@ TX_BOOT="${TX_BOOT:-1}"
 TX_BANNER="${TX_BANNER:-1}"
 TX_AUTOUPDATE="${TX_AUTOUPDATE:-1}"
 TX_CHECK_INTERVAL="${TX_CHECK_INTERVAL:-86400}"
-HV_COOLDOWN="${HV_COOLDOWN:-300}"
+if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == *com.termux* ]]; then
+  HV_COOLDOWN="${HV_COOLDOWN:-0}"
+  TX_BOOT_REOPEN="${TX_BOOT_REOPEN:-1}"
+else
+  HV_COOLDOWN="${HV_COOLDOWN:-300}"
+  TX_BOOT_REOPEN="${TX_BOOT_REOPEN:-0}"
+fi
 
 TX_DEV_NAME="${TX_DEV_NAME:-Its2Pawan}"
 TX_DEV_ROLE="${TX_DEV_ROLE:-Developer}"
@@ -169,8 +175,8 @@ hv_cleanup() {
   stty sane </dev/tty 2>/dev/null || stty sane 2>/dev/null || true
 }
 
-hv_enter() { printf '%s' "${E}[?1049h${E}[?7l${E}[?25l${E}[40m${E}[2J"; IN_ALT=1; }
-hv_leave() { printf '%s' "${E}[?1049l${E}[?7h${E}[?25h${X}"; IN_ALT=0; }
+hv_enter() { printf '%s' "${E}[?1049h${E}[?7l${E}[?25l${E}[40m${E}[2J${E}[H"; IN_ALT=1; }
+hv_leave() { printf '%s' "${E}[?2026l${E}[?1049l${E}[?7h${E}[?25h${X}"; IN_ALT=0; }
 
 hv_size() {
   local r="" c=""
@@ -202,7 +208,7 @@ hv_layout() {
   drop_len=()
   local c
   for ((c=1; c<=COLS; c++)); do
-    drop_y[c]=$(( -(RANDOM % ROWS) ))
+    drop_y[c]=$(( (RANDOM % ROWS) - (ROWS / 2) ))
     drop_len[c]=$(( 5 + RANDOM % ROWS ))
   done
 }
@@ -210,8 +216,8 @@ hv_layout() {
 hv_screen() {
   [[ -t 1 ]] || { _tx_err "Run this in a real terminal."; return 1; }
   hv_size
-  if (( COLS < 50 || ROWS < 14 )); then
-    _tx_err "Terminal too small (${COLS}x${ROWS}, need at least 50x14)."
+  if (( COLS < 32 || ROWS < 12 )); then
+    _tx_err "Terminal too small (${COLS}x${ROWS}, need at least 32x12)."
     return 1
   fi
   hv_layout
@@ -222,7 +228,7 @@ hv_check_resize() {
   (( RESIZED )) || return 1
   RESIZED=0
   hv_size
-  (( COLS < 50 || ROWS < 14 )) && return 1
+  (( COLS < 32 || ROWS < 12 )) && return 1
   hv_layout
   printf '%s' "${E}[40m${E}[2J"
   return 0
@@ -274,27 +280,34 @@ hv_put() {
 
 hv_rain_frame() {
   BUF=""
-  local c h l ch1 ch2 ch3
+  local c h l ch1 ch2 ch3 ch4
   local hex_c="0123456789ABCDEF" gly_c='!@#$%&*+=?~<>01'
   for ((c=1; c<=COLS; c+=2)); do
     h=$(( drop_y[c] + 1 )); drop_y[c]=$h; l=${drop_len[c]}
     case "$TX_RAIN" in
       hex)
-        ch1="${hex_c:((RANDOM&15)):1}"; ch2="${hex_c:((RANDOM&15)):1}"; ch3="${hex_c:((RANDOM&15)):1}" ;;
+        ch1="${hex_c:((RANDOM&15)):1}"; ch2="${hex_c:((RANDOM&15)):1}"
+        ch3="${hex_c:((RANDOM&15)):1}"; ch4="${hex_c:((RANDOM&15)):1}" ;;
       glyph)
-        ch1="${gly_c:((RANDOM%14)):1}"; ch2="${gly_c:((RANDOM%14)):1}"; ch3="${gly_c:((RANDOM%14)):1}" ;;
+        ch1="${gly_c:((RANDOM%14)):1}"; ch2="${gly_c:((RANDOM%14)):1}"
+        ch3="${gly_c:((RANDOM%14)):1}"; ch4="${gly_c:((RANDOM%14)):1}" ;;
       *)
-        ch1=$((RANDOM&1)); ch2=$((RANDOM&1)); ch3=$((RANDOM&1)) ;;
+        ch1=$((RANDOM&1)); ch2=$((RANDOM&1)); ch3=$((RANDOM&1)); ch4=$((RANDOM&1)) ;;
     esac
-    hv_put "$h"             "$c" "$W"  "$ch1"
-    hv_put $(( h - 1 ))     "$c" "$BR" "$ch2"
-    hv_put $(( h - l / 2 )) "$c" "$G"  "$ch3"
-    hv_put $(( h - l ))     "$c" "$G"  " "
+    hv_put "$h"                 "$c" "$W"   "$ch1"
+    hv_put $(( h - 1 ))         "$c" "$BR"  "$ch2"
+    hv_put $(( h - l / 2 ))     "$c" "$G"   "$ch3"
+    hv_put $(( h - l * 3 / 4 )) "$c" "$DIM" "$ch4"
+    hv_put $(( h - l ))         "$c" "$G"   " "
     if (( h - l > ROWS )); then
       drop_y[c]=$(( -(RANDOM % ROWS) ))
       drop_len[c]=$(( 5 + RANDOM % ROWS ))
     fi
   done
+}
+
+_hv_flush() {
+  printf '%s%s%s' "${E}[?2026h" "$BUF" "${E}[?2026l"
 }
 
 # ---------------------------------------------------------------------
@@ -334,17 +347,21 @@ hv_barline() {
   (( bw < 4 )) && bw=4
   (( p > 100 )) && p=100; (( p < 0 )) && p=0
   local exw=$(( INNER - bw - 14 ))
-  (( exw < 1 )) && exw=1
+  (( exw < 0 )) && exw=0
   (( exw > 13 )) && exw=13
   col=$BR; (( p >= 60 )) && col=$Y; (( p >= 85 )) && col=$R
   fill=$(( p * bw / 100 ))
   printf -v f '%*s' "$fill" ''; f=${f// /█}
   printf -v e '%*s' "$(( bw - fill ))" ''; e=${e// /░}
-  local raw_ex
-  raw_ex="$(_tx_strip_ctrl "$3")"
-  printf -v ex "%-${exw}s" "${raw_ex:0:$exw}"
   printf -v lab '%-4s' "${1:0:4}"
-  LINES+=(" ${DIM}${lab} ${G}[${col}${f}${DIM}${e}${G}] ${W}$(printf '%3d%%' "$p") ${G}${ex}")
+  if (( exw > 0 )); then
+    local raw_ex
+    raw_ex="$(_tx_strip_ctrl "$3")"
+    printf -v ex "%-${exw}s" "${raw_ex:0:$exw}"
+    LINES+=(" ${DIM}${lab} ${G}[${col}${f}${DIM}${e}${G}] ${W}$(printf '%3d%%' "$p") ${G}${ex}")
+  else
+    LINES+=(" ${DIM}${lab} ${G}[${col}${f}${DIM}${e}${G}] ${W}$(printf '%3d%%' "$p")")
+  fi
 }
 
 hv_svc_lines() {
@@ -654,8 +671,8 @@ _hv_run_panel() {
       if (( SECONDS - slow_last >= 5 )); then hv_stats_slow; slow_last=$SECONDS; fi
       "$builder"; hv_compact_lines
     fi
-    hv_rain_frame; hv_draw_panel; printf '%s' "$BUF"
-    if read -rsn1 -t "${HV_FPS_DELAY:-0.05}" k; then
+    hv_rain_frame; hv_draw_panel; _hv_flush
+    if read -rsn1 -t "${HV_FPS_DELAY:-0.035}" k; then
       case "$k" in
         q|Q) break ;;
         t|T) _tx_cycle_theme; "$builder"; hv_compact_lines ;;
@@ -836,10 +853,12 @@ hv_build_boot() {
 }
 
 _hv_boot_wait() {
-  local d="${HV_FPS_DELAY:-0.03}" k=""
+  local d="${HV_FPS_DELAY:-0.025}" k=""
   if [[ -t 0 ]] && ( : </dev/tty ) 2>/dev/null; then
     if read -rsn1 -t "$d" k </dev/tty 2>/dev/null; then
-      return 1
+      case "$k" in
+        q|Q|" "|"") return 1 ;;
+      esac
     fi
   else
     sleep "$d" 2>/dev/null || true
@@ -872,7 +891,7 @@ hv_boot() {
   )
 
   LOGROWS=$(( ROWS - 9 )); (( LOGROWS > 9 )) && LOGROWS=9; (( LOGROWS < 2 )) && LOGROWS=2
-  LOGS=(); CUR=""; CUR_ON=0; PCT=0; STATUS="initializing... (any key to skip)"; STATUS_COLOR="$Y"
+  LOGS=(); CUR=""; CUR_ON=0; PCT=0; STATUS="initializing... (q/Enter to skip)"; STATUS_COLOR="$Y"
   hv_build_boot; hv_geometry
   hv_enter
 
@@ -882,9 +901,9 @@ hv_boot() {
     if (( hold > 0 )); then
       hold=$(( hold - 1 ))
     else
-      n=$(( n + 3 )); CUR_ON=1; CUR="${txt:0:n}"
+      n=$(( n + 4 )); CUR_ON=1; CUR="${txt:0:n}"
       if (( n >= ${#txt} )); then
-        LOGS+=("OK|$txt"); CUR_ON=0; i=$(( i + 1 )); n=0; hold=5
+        LOGS+=("OK|$txt"); CUR_ON=0; i=$(( i + 1 )); n=0; hold=3
         PCT=$(( i * 100 / total ))
       fi
     fi
@@ -892,14 +911,14 @@ hv_boot() {
       LOGROWS=$(( ROWS - 9 )); (( LOGROWS > 9 )) && LOGROWS=9; (( LOGROWS < 2 )) && LOGROWS=2
       hv_geometry
     fi
-    hv_build_boot; hv_rain_frame; hv_draw_panel; printf '%s' "$BUF"
+    hv_build_boot; hv_rain_frame; hv_draw_panel; _hv_flush
     _hv_boot_wait || { skip=1; break; }
   done
 
   if (( ! skip )); then
     STATUS=">>> ACCESS GRANTED <<<"; STATUS_COLOR="$BR"
-    for ((i=0; i<35; i++)); do
-      hv_build_boot; hv_rain_frame; hv_draw_panel; printf '%s' "$BUF"
+    for ((i=0; i<28; i++)); do
+      hv_build_boot; hv_rain_frame; hv_draw_panel; _hv_flush
       _hv_boot_wait || break
     done
   fi
@@ -913,10 +932,10 @@ hv_matrix() {
   hv_init
   hv_screen || return 1
   hv_enter
-  local k delay="${HV_FPS_DELAY:-0.04}"
+  local k delay="${HV_FPS_DELAY:-0.035}"
   while true; do
     hv_check_resize
-    hv_rain_frame; printf '%s' "$BUF"
+    hv_rain_frame; _hv_flush
     if read -rsn1 -t "$delay" k; then
       case "$k" in
         t|T) _tx_cycle_theme ;;
@@ -1038,7 +1057,7 @@ tx_update_prompt() {
   [[ -t 0 && -t 1 ]] || return 0
   local lv out rv rb
   lv=$(tx_local_ver)
-  out=$(tx_remote_ver 2>/dev/null) || return 0
+  out=$(TX_TIMEOUT=3 tx_remote_ver 2>/dev/null) || return 0
   read -r rv rb <<< "$out"
   tx_ver_gt "$rv" "$lv" || return 0
 
@@ -1077,8 +1096,11 @@ _tx_config_init() {
       echo 'TX_BANNER=1                # 1 = compact status line on login, 0 = hide'
       echo 'TX_AUTOUPDATE=1            # 0 = never auto update'
       echo 'TX_CHECK_INTERVAL=86400    # seconds between update checks'
-      echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
-      if [[ $TX_DEVICE == vps ]]; then
+      if [[ $TX_DEVICE == termux ]]; then
+        echo 'HV_COOLDOWN=0              # 0 = show boot animation every Termux reopen'
+        echo 'TX_BOOT_REOPEN=1           # 1 = always play boot on Termux reopen'
+      else
+        echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
         echo 'HV_SERVICES_STR="ssh nginx docker wings"   # services shown in hv'
       fi
     } > "$TX_HOME/config"
@@ -1307,7 +1329,13 @@ ${TX_CA}System, VPS & Termux${TX_CX}
   txstorage                   Termux shared storage setup / VPS mounts
   txwake [on|off]             Termux CPU wake-lock toggle
 
-${TX_CA}Files & Helpers${TX_CX}
+${TX_CA}Files & Shortcuts${TX_CX}
+  py | py3 [file]             Run python3 (or python fallback)
+  pipi <pkg>                  Install Python package via pip
+  cls | tx | reload           Clear screen / show help / reload Theam-X
+  .. | ... | ....             Quick cd up 1, 2, or 3 directories
+  ll | la                     Detailed / hidden file listing
+  gst | ga | gc | gp | gpush  Git shortcuts (status/add/commit/pull/push)
   extract <archive>           Extract tar.*, zip, gz, bz2, xz, 7z, rar
   mkcd <dir>                  Create directory and cd into it
   backup <file|dir>           Create timestamped .bak or .tar.gz backup
@@ -1784,10 +1812,10 @@ tx_diag() {
     fi
   fi
   hv_size
-  if (( COLS >= 50 && ROWS >= 14 )); then
-    printf '  %b terminal size %dx%d (>= 50x14)\n' "$ok" "$COLS" "$ROWS"
+  if (( COLS >= 32 && ROWS >= 12 )); then
+    printf '  %b terminal size %dx%d (>= 32x12)\n' "$ok" "$COLS" "$ROWS"
   else
-    printf '  %b terminal size %dx%d (too small for panels, need 50x14)\n' "$wn" "$COLS" "$ROWS"
+    printf '  %b terminal size %dx%d (too small for panels, need 32x12)\n' "$wn" "$COLS" "$ROWS"
   fi
   if [[ -f "$TX_HOME/ai.conf" ]]; then
     printf '  %b /ai config present (%s)\n' "$ok" "$TX_HOME/ai.conf"
@@ -2821,7 +2849,7 @@ _tx_register_complete() {
   complete -o bashdefault -o default -F _tx_path_complete \
     ls cat less more head tail cp mv rm mkdir rmdir touch chmod chown \
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
-    ssh python python3 node npm extract backup diskinfo serve 2>/dev/null || true
+    ssh python python3 py py3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
     txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh /ai ai txai 2>/dev/null || true
 }
@@ -2870,6 +2898,32 @@ txssh()       { tx_ssh "$@"; }
 /ai()         { tx_ai "$@"; }
 ai()          { tx_ai "$@"; }
 txai()        { tx_ai "$@"; }
+
+# ---------------------------------------------------------------------
+#  short commands & aliases
+# ---------------------------------------------------------------------
+py() {
+  if command -v python3 >/dev/null 2>&1; then python3 "$@"
+  elif command -v python >/dev/null 2>&1; then python "$@"
+  else _tx_err "python3/python not installed (Termux: pkg install python | VPS: apt install python3)"; return 127; fi
+}
+py3()    { py "$@"; }
+pipi()   { py -m pip install "$@"; }
+cls()    { clear; }
+tx()     { tx_help "$@"; }
+reload() { . "$HV_SELF" && _tx_say "Theam-X v$(tx_local_ver) reloaded"; }
+..()     { cd ..; }
+...()    { cd ../..; }
+....()   { cd ../../..; }
+ll()     { ls -alF --color=auto "$@" 2>/dev/null || ls -alF "$@"; }
+la()     { ls -A --color=auto "$@" 2>/dev/null || ls -A "$@"; }
+gst()    { git status -sb "$@"; }
+ga()     { git add "$@"; }
+gc()     { git commit "$@"; }
+gp()     { git pull "$@"; }
+gpush()  { git push "$@"; }
+gd()     { git diff "$@"; }
+gl()     { git log --oneline -n 15 "$@"; }
 
 # ---------------------------------------------------------------------
 #  prompt theme
@@ -2934,17 +2988,22 @@ if (return 0 2>/dev/null); then
       [[ "$PROMPT_COMMAND" == *hv_prompt* ]] || PROMPT_COMMAND="hv_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     fi
 
-    if [[ -t 1 && -z "${HV_BOOTED:-}" ]]; then
-      export HV_BOOTED=1
+    if [[ -t 1 && "${_HV_BOOTED_PID:-}" != "$$" ]]; then
+      _HV_BOOTED_PID="$$"
+      unset HV_BOOTED 2>/dev/null || true
       if [[ -z "${TMUX:-}" && "${TX_BOOT:-1}" == 1 && "${HV_QUICK:-0}" != 1 ]]; then
-        tx_stamp="${XDG_RUNTIME_DIR:-${TMPDIR:-$HOME}}/.hv_boot_${UID:-0}"
-        tx_now=$(printf '%(%s)T' -1); tx_last=$(cat "$tx_stamp" 2>/dev/null || echo 0)
-        _tx_is_int "$tx_last" || tx_last=0
-        if (( tx_now - tx_last > ${HV_COOLDOWN:-300} )); then
+        if [[ $TX_DEVICE == termux && "${TX_BOOT_REOPEN:-1}" == 1 ]]; then
           ( hv_boot )
-          echo "$tx_now" > "$tx_stamp" 2>/dev/null || true
+        else
+          tx_stamp="${XDG_RUNTIME_DIR:-${TMPDIR:-$HOME}}/.hv_boot_${UID:-0}"
+          tx_now=$(printf '%(%s)T' -1); tx_last=$(cat "$tx_stamp" 2>/dev/null || echo 0)
+          _tx_is_int "$tx_last" || tx_last=0
+          if (( HV_COOLDOWN <= 0 || tx_now - tx_last > HV_COOLDOWN )); then
+            ( hv_boot )
+            echo "$tx_now" > "$tx_stamp" 2>/dev/null || true
+          fi
+          unset tx_stamp tx_now tx_last
         fi
-        unset tx_stamp tx_now tx_last
       fi
       if [[ -s "$TX_HOME/notice" ]]; then
         printf '%s[*]%s %s\n' "$TX_CY" "$TX_CX" "$(cat "$TX_HOME/notice")"; rm -f "$TX_HOME/notice"

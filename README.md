@@ -13,7 +13,7 @@
 **Hacker-style terminal theme, system toolkit & built-in `/ai` assistant for VPS and Termux**
 7 color themes · 4 prompt styles · 3 matrix rain modes · `/ai` chat & command helper · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-2.1.0-brightgreen)
+![version](https://img.shields.io/badge/version-2.2.0-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
@@ -123,9 +123,15 @@ cat error.log | /ai summarize    # Pipe logs directly to AI
 | `txstorage` | Termux `~/storage` check/setup, or VPS disk mounts |
 | `txwake [on\|off]` | Toggle Termux CPU wake-lock |
 
-### Files & Helpers
+### Files & Shortcuts
 | Command | What it does |
 |---|---|
+| `py` / `py3` | Run `python3` (with `python` fallback) |
+| `pipi <pkg>` | Install Python package via `pip` |
+| `cls` / `tx` / `reload` | Clear screen / show command menu / reload Theam-X |
+| `..` / `...` / `....` | Jump up 1, 2, or 3 parent directories |
+| `ll` / `la` | Detailed (`ls -alF`) / hidden (`ls -A`) file listing |
+| `gst` / `ga` / `gc` / `gp` / `gpush` / `gd` / `gl` | Git shortcuts (`status`, `add`, `commit`, `pull`, `push`, `diff`, `log`) |
 | `extract <file>` | Extract `.tar.*`, `.zip`, `.gz`, `.bz2`, `.xz`, `.7z`, `.rar` |
 | `mkcd <dir>` | Create directory and `cd` into it |
 | `backup <file\|dir>` | Timestamped `.bak` or `.tar.gz` backup |

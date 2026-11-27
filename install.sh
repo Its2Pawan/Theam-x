@@ -124,8 +124,11 @@ BANNER
       echo 'TX_BANNER=1                # 1 = compact status line on login, 0 = hide'
       echo 'TX_AUTOUPDATE=1            # 0 = never auto update'
       echo 'TX_CHECK_INTERVAL=86400    # seconds between update checks'
-      echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
-      if [[ $DEVICE == vps ]]; then
+      if [[ $DEVICE == termux ]]; then
+        echo 'HV_COOLDOWN=0              # 0 = show boot animation every Termux reopen'
+        echo 'TX_BOOT_REOPEN=1           # 1 = always play boot on Termux reopen'
+      else
+        echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
         echo 'HV_SERVICES_STR="ssh nginx docker wings"   # services shown in hv'
       fi
     } > "$DEST/config"
@@ -159,7 +162,7 @@ BANNER
   say "installed Theam-X v$(head -n1 "$DEST/ver.txt" | tr -d '[:space:]')"
   echo
   printf '%s\n' "${D}  Run now :${X}  source ~/.bashrc"
-  printf '%s\n' "${D}  Menu/AI :${X}  theamx  |  /ai (config + chat)  |  txtheme"
+  printf '%s\n' "${D}  Menu/AI :${X}  theamx (or tx) | /ai | txtheme | py (python3)"
   printf '%s\n' "${D}  Panels  :${X}  sfetch [-q] | hv | matrix | hvboot | dev"
   printf '%s\n' "${D}  Tools   :${X}  txcpu | txmem | txtemp | txlog | txssh | myip | ports | txdiag"
   printf '%s\n' "${D}  Auto-update is ON (checks GitHub once a day). Turn off: txtheme autoupdate off${X}"
