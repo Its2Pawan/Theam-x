@@ -1289,10 +1289,10 @@ tx_help() {
   printf '\n%s=== THEAM-X v%s (%s | theme:%s | prompt:%s | rain:%s) ===%s\n\n' \
     "$TX_C2" "$(tx_local_ver)" "$TX_DEVICE" "$TX_THEME" "$TX_PROMPT" "$TX_RAIN" "$TX_CX"
   cat <<EOF
-${TX_CA}Small AI Assistant (/ai | agy | airoute | aimem | aiskill)${TX_CX}
-  agy [goal]                  Open Claude Code / AGY interactive CLI (or run goal)
+${TX_CA}Small AI Assistant (/ai | txagent | airoute | aimem | aiskill)${TX_CX}
   /ai                         Setup wizard (first run) or interactive AI CLI
-  /ai cli | /ai [-y] <prompt> Open agent CLI or ask directly (-y: auto-approve)
+  /ai cli | txagent [goal]    Open interactive agent CLI (or run goal)
+  /ai [-y] <prompt>           Ask AI directly (-y: auto-approve; recalls memory+skills)
   /ai auto <on|off|safe>      Persistent auto-approve (off / safe / on=YOLO)
   /ai make <file> <desc>      Create a new script/app file (Save / Save & Run)
   /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
@@ -4376,7 +4376,7 @@ EOF
       _tx_ai_save && _tx_say "/ai ${k} saved"
       return $?
       ;;
-    cli|agy)
+    cli|txagent)
       if ! _tx_ai_is_configured; then
         _tx_warn "/ai needs configuration first (type, base_url, api_key, model)."
         _tx_ai_wizard || return 1
@@ -4681,7 +4681,7 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="cli agy make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -y -c cmd --help"
+        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -y -c cmd --help"
       elif [[ "$prev" == auto ]]; then
         words="off safe on status"
       elif [[ "$prev" == skill || "$prev" == skills ]]; then
@@ -4823,7 +4823,7 @@ txbench()     { tx_bench "$@"; }
 /ai()         { tx_ai "$@"; }
 ai()          { tx_ai "$@"; }
 txai()        { tx_ai "$@"; }
-agy()         { tx_ai cli "$@"; }
+txagent()     { tx_ai cli "$@"; }
 airoute()     { tx_ai_route "$@"; }
 aimem()       { tx_ai_mem "$@"; }
 aiskill()     { tx_ai_skill "$@"; }
@@ -4833,7 +4833,7 @@ remember()    { _tx_ai_mem_add "$@"; }
 # ---------------------------------------------------------------------
 #  short commands & aliases
 # ---------------------------------------------------------------------
-unalias py py3 pipi cls tx reload ll la gst ga gc gp gpush gd gl agy 2>/dev/null || true
+unalias py py3 pipi cls tx reload ll la gst ga gc gp gpush gd gl 2>/dev/null || true
 py() {
   if command -v python3 >/dev/null 2>&1; then python3 "$@"
   elif command -v python >/dev/null 2>&1; then python "$@"
@@ -4998,7 +4998,7 @@ else
     cron|txcron)   tx_cron "$@" ;;
     bench|txbench) tx_bench "$@" ;;
     ai|/ai|txai)   tx_ai "$@" ;;
-    agy|cli)       tx_ai cli "$@" ;;
+    txagent|cli)   tx_ai cli "$@" ;;
     airoute|route) tx_ai_route "$@" ;;
     aimem|mem)     tx_ai_mem "$@" ;;
     aiskill|skill) tx_ai_skill "$@" ;;
