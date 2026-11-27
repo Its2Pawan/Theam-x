@@ -5,7 +5,6 @@
 #  Copyright (c) 2026 Its2Pawan. All Rights Reserved.
 # =====================================================================
 
-# force real bash even if launched with sh/dash
 [ -n "$BASH_VERSION" ] || exec bash "$0" "$@"
 
 HV_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
@@ -16,7 +15,6 @@ TX_REPO="Its2Pawan/Theam-x"
 TX_BRANCH="${TX_BRANCH:-main}"
 TX_RAW_BASE="${TX_RAW_BASE:-https://raw.githubusercontent.com}"
 
-# developer card (edit freely; empty = hidden)
 TX_DEV_NAME="${TX_DEV_NAME:-Its2Pawan}"
 TX_DEV_ROLE="${TX_DEV_ROLE:-Developer}"
 TX_DEV_TAG="${TX_DEV_TAG:-Discord Bots | Minecraft Plugins | Game Servers}"
@@ -25,7 +23,6 @@ TX_DEV_REPO="${TX_DEV_REPO:-https://github.com/Its2Pawan/Theam-x}"
 TX_DEV_DISCORD="${TX_DEV_DISCORD:-}"
 TX_DEV_SITE="${TX_DEV_SITE:-}"
 
-# device: termux (Android) or vps (any Linux server)
 if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == *com.termux* ]]; then
   TX_DEVICE=termux; HV_DISK_PATH="$HOME"; : "${HV_SERVICES_STR:=}"
 else
@@ -34,7 +31,7 @@ fi
 read -ra HV_SERVICES <<< "$HV_SERVICES_STR"
 
 # ---------------------------------------------------------------------
-#  basics  (ESC = octal \033 — works on every bash)
+#  basics
 # ---------------------------------------------------------------------
 hv_init() {
   E=$'\033'; X="${E}[0m"
@@ -106,7 +103,7 @@ hv_geometry() {
 }
 
 # ---------------------------------------------------------------------
-#  rain (0/1) - skips the panel area
+#  rain (0/1)
 # ---------------------------------------------------------------------
 hv_put() {
   (( $1 < 1 || $1 > ROWS )) && return
@@ -221,12 +218,30 @@ hv_stats_static() {
   IPADDR=$(hv_ip)
   if [[ $TX_DEVICE == termux ]]; then
     OSNAME="Android $(getprop ro.build.version.release 2>/dev/null) (Termux)"
+    MODELNAME="$(getprop ro.product.manufacturer 2>/dev/null) $(getprop ro.product.model 2>/dev/null)"
   else
     OSNAME=$(grep -m1 '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+    MODELNAME=$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null)
+    local virt; virt=$(systemd-detect-virt 2>/dev/null)
+    [[ -n $virt && $virt != none ]] && MODELNAME="${MODELNAME:+$MODELNAME }[${virt}]"
   fi
   [[ -z "${OSNAME// /}" ]] && OSNAME=$(uname -s)
+  [[ -z "${MODELNAME// /}" ]] && MODELNAME="$TX_DEVICE"
   KERN=$(uname -r)
   NCPU=$(nproc 2>/dev/null); NCPU=${NCPU:-1}
+  CPUMODEL=$(grep -m1 -E '^(model name|Hardware)' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//')
+  if [[ -z $CPUMODEL && $TX_DEVICE == termux ]]; then CPUMODEL=$(getprop ro.soc.model 2>/dev/null); fi
+  [[ -z $CPUMODEL ]] && CPUMODEL=$(uname -m)
+
+  if command -v dpkg-query >/dev/null 2>&1; then PKGS="$(dpkg-query -f '.\n' -W 2>/dev/null | wc -l) (dpkg)"
+  elif command -v rpm >/dev/null 2>&1; then PKGS="$(rpm -qa 2>/dev/null | wc -l) (rpm)"
+  elif command -v apk >/dev/null 2>&1; then PKGS="$(apk info 2>/dev/null | wc -l) (apk)"
+  elif command -v pacman >/dev/null 2>&1; then PKGS="$(pacman -Q 2>/dev/null | wc -l) (pacman)"
+  else PKGS="n/a"; fi
+
+  SHELLNAME="${SHELL##*/} ${BASH_VERSION%%(*}"
+  TERMNAME="${TERM_PROGRAM:-${TERM:-n/a}}"
+
   CPU=0; PREV_TOTAL=0; PREV_IDLE=0; PREV_RX=0; PREV_TX=0; PREV_T=$SECONDS
   RX_TXT="0KB/s"; TX_TXT="0KB/s"; NUSERS=0; HAS_SYSTEMD=0
 }
@@ -310,7 +325,7 @@ hv_stats_slow() {
 }
 
 # ---------------------------------------------------------------------
-#  LIVE MONITOR
+#  LIVE MONITOR (hv)
 # ---------------------------------------------------------------------
 hv_build_dash() {
   LINES=()
@@ -351,6 +366,101 @@ hv_dash() {
       if (( SECONDS - slow_last >= 5 )); then hv_stats_slow; slow_last=$SECONDS; fi
       hv_build_dash
     fi
+    hv_rain_frame; hv_draw_panel; printf '%s' "$BUF"
+    if read -rsn1 -t "${HV_FPS_DELAY:-0.05}" k; then
+      [[ "$k" == q || "$k" == Q ]] && break
+    fi
+  done
+  hv_leave
+}
+
+# ---------------------------------------------------------------------
+#  SFETCH PANEL
+# ---------------------------------------------------------------------
+hv_build_sfetch() {
+  LINES=()
+  hv_center "$C" "[ ${HOST} // SYSTEM INFO ]"
+  LINES+=("__SEP__")
+  hv_kv USER   "${USER:-$(id -un)}"
+  hv_kv HOST   "$HOST"
+  hv_kv OS     "$OSNAME"
+  hv_kv DEVICE "$MODELNAME"
+  hv_kv KERNEL "$KERN"
+  hv_kv UPTIME "$UPTXT"
+  hv_kv SHELL  "$SHELLNAME"
+  hv_kv TERM   "$TERMNAME"
+  hv_kv PKGS   "$PKGS"
+  LINES+=("__SEP__")
+  hv_kv CPU    "$CPUMODEL"
+  hv_kv MEMORY "$MEM_TXT ($MEM_PCT%)"
+  hv_kv DISK   "$DISK_TXT ($DISK_PCT%)"
+  hv_kv IP     "$IPADDR"
+  LINES+=("__SEP__")
+  hv_kv THEME  "Theam-X v$(tx_local_ver) by ${TX_DEV_NAME}"
+  LINES+=("__SEP__")
+  hv_center "$DIM" "$(date '+%F  %T')   |   q = quit"
+}
+
+hv_sfetch() {
+  hv_init
+  hv_screen || return 1
+  declare -A SVC_ST
+  hv_stats_static; hv_stats_fast; hv_stats_slow
+  hv_build_sfetch; hv_geometry
+  if (( PH > ROWS )); then echo "Terminal too small for sfetch (need ${PH} rows)."; return 1; fi
+  hv_enter
+  local last=-1 slow_last=$SECONDS k
+  while true; do
+    if hv_check_resize; then hv_build_sfetch; hv_geometry; fi
+    if (( SECONDS != last )); then
+      last=$SECONDS
+      hv_stats_fast
+      if (( SECONDS - slow_last >= 5 )); then hv_stats_slow; slow_last=$SECONDS; fi
+      hv_build_sfetch
+    fi
+    hv_rain_frame; hv_draw_panel; printf '%s' "$BUF"
+    if read -rsn1 -t "${HV_FPS_DELAY:-0.05}" k; then
+      [[ "$k" == q || "$k" == Q ]] && break
+    fi
+  done
+  hv_leave
+}
+
+# ---------------------------------------------------------------------
+#  DEV PANEL
+# ---------------------------------------------------------------------
+hv_build_dev() {
+  LINES=()
+  hv_center "$C" "[ ${TX_DEV_NAME} // DEVELOPER CARD ]"
+  LINES+=("__SEP__")
+  hv_kv NAME    "$TX_DEV_NAME"
+  hv_kv ROLE    "$TX_DEV_ROLE"
+  hv_kv STACK   "$TX_DEV_TAG"
+  LINES+=("__SEP__")
+  hv_kv GITHUB  "$TX_DEV_GITHUB"
+  hv_kv REPO    "$TX_DEV_REPO"
+  hv_kv PROJECT "Theam-X v$(tx_local_ver)"
+  hv_kv DISCORD "$TX_DEV_DISCORD"
+  hv_kv SITE    "$TX_DEV_SITE"
+  LINES+=("__SEP__")
+  hv_kv DEVICE  "$TX_DEVICE"
+  hv_kv SHELL   "$SHELLNAME"
+  hv_kv TERM    "$TERMNAME"
+  LINES+=("__SEP__")
+  hv_center "$DIM" "$(date '+%F  %T')   |   q = quit"
+}
+
+hv_dev() {
+  hv_init
+  hv_screen || return 1
+  declare -A SVC_ST
+  hv_stats_static; hv_stats_fast; hv_stats_slow
+  hv_build_dev; hv_geometry
+  if (( PH > ROWS )); then echo "Terminal too small for dev (need ${PH} rows)."; return 1; fi
+  hv_enter
+  local k
+  while true; do
+    if hv_check_resize; then hv_build_dev; hv_geometry; fi
     hv_rain_frame; hv_draw_panel; printf '%s' "$BUF"
     if read -rsn1 -t "${HV_FPS_DELAY:-0.05}" k; then
       [[ "$k" == q || "$k" == Q ]] && break
@@ -457,7 +567,7 @@ hv_matrix() {
 }
 
 # ---------------------------------------------------------------------
-#  version + auto update
+#  version + update
 # ---------------------------------------------------------------------
 tx_get() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time "${TX_TIMEOUT:-8}" "$1"
@@ -494,15 +604,13 @@ tx_remote_ver() {
   return 1
 }
 
-tx_update() {
-  local quiet=${1:-0} lv out rv rb base tmp
+# verbose interactive install
+tx_install() {
+  local lv rv rb base tmp
   lv=$(tx_local_ver)
-  out=$(tx_remote_ver) || { (( quiet )) || printf '\033[1;91m[x]\033[0m can'"'"'t reach GitHub (offline, or repo files not found)\n'; return 1; }
+  local out; out=$(tx_remote_ver) || { printf '\033[1;91m[x]\033[0m cannot reach GitHub\n'; return 1; }
   read -r rv rb <<< "$out"
-  if ! tx_ver_gt "$rv" "$lv"; then
-    (( quiet )) || printf '\033[1;92m[+]\033[0m up to date  (v%s)\n' "$lv"; return 0
-  fi
-  (( quiet )) || printf '\033[1;93m[*]\033[0m updating v%s -> v%s ...\n' "$lv" "$rv"
+  printf '\033[1;93m[*]\033[0m installing v%s -> v%s ...\n' "$lv" "$rv"
   base="${TX_RAW_BASE}/${TX_REPO}/${rb}"
   mkdir -p "$TX_HOME"; tmp="$TX_HOME/.tmp.$$"; mkdir -p "$tmp" || return 1
   if tx_get "$base/theam-x.sh" > "$tmp/theam-x.sh" 2>/dev/null \
@@ -511,26 +619,44 @@ tx_update() {
     mv -f "$tmp/theam-x.sh" "$TX_HOME/theam-x.sh"
     printf '%s\n' "$rv" > "$TX_HOME/ver.txt"
     rm -rf "$tmp"
-    if (( quiet )); then
-      printf 'Theam-X updated v%s -> v%s (active now in new shells)\n' "$lv" "$rv" > "$TX_HOME/notice"
-    else
-      printf '\033[1;92m[+]\033[0m updated to v%s  (open a new shell or run: source ~/.bashrc)\n' "$rv"
-    fi
+    printf '\033[1;92m[+]\033[0m updated to v%s  (open a new shell or run: source ~/.bashrc)\n' "$rv"
     return 0
   fi
   rm -rf "$tmp"
-  (( quiet )) || printf '\033[1;91m[x]\033[0m update failed, kept v%s\n' "$lv"
+  printf '\033[1;91m[x]\033[0m update failed, kept v%s\n' "$lv"
   return 1
 }
 
-tx_auto_update() {
-  [[ "${TX_AUTOUPDATE:-1}" == 1 ]] || return 0
-  mkdir -p "$TX_HOME" 2>/dev/null || return 0
-  local stamp="$TX_HOME/.last_check" now last
-  now=$(printf '%(%s)T' -1); last=$(cat "$stamp" 2>/dev/null || echo 0)
-  (( now - last < ${TX_CHECK_INTERVAL:-86400} )) && return 0
-  echo "$now" > "$stamp"
-  ( tx_update 1 >/dev/null 2>&1 & )
+# silent install (background)
+tx_install_quiet() {
+  local lv rv rb base tmp
+  lv=$(tx_local_ver)
+  local out; out=$(tx_remote_ver) || return 1
+  read -r rv rb <<< "$out"
+  base="${TX_RAW_BASE}/${TX_REPO}/${rb}"
+  mkdir -p "$TX_HOME"; tmp="$TX_HOME/.tmp.$$"; mkdir -p "$tmp" || return 1
+  if tx_get "$base/theam-x.sh" > "$tmp/theam-x.sh" 2>/dev/null \
+     && [[ -s "$tmp/theam-x.sh" ]] && bash -n "$tmp/theam-x.sh" 2>/dev/null \
+     && grep -q 'THEAM-X' "$tmp/theam-x.sh"; then
+    mv -f "$tmp/theam-x.sh" "$TX_HOME/theam-x.sh"
+    printf '%s\n' "$rv" > "$TX_HOME/ver.txt"
+    rm -rf "$tmp"
+    printf 'Theam-X updated v%s -> v%s (active in new shells)\n' "$lv" "$rv" > "$TX_HOME/notice"
+    return 0
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
+tx_update() {
+  local lv out rv rb
+  lv=$(tx_local_ver)
+  out=$(tx_remote_ver) || { printf '\033[1;91m[x]\033[0m cannot reach GitHub\n'; return 1; }
+  read -r rv rb <<< "$out"
+  if ! tx_ver_gt "$rv" "$lv"; then
+    printf '\033[1;92m[+]\033[0m up to date  (v%s)\n' "$lv"; return 0
+  fi
+  tx_install
 }
 
 tx_version() {
@@ -542,181 +668,57 @@ tx_version() {
     if tx_ver_gt "$rv" "$lv"; then printf '\033[1;93m[!]\033[0m update available: v%s   (run: txupdate)\n' "$rv"
     else printf '\033[1;92m[+]\033[0m you have the latest version\n'; fi
   else
-    printf '\033[1;91m[x]\033[0m can'"'"'t check GitHub right now\n'
+    printf '\033[1;91m[x]\033[0m cannot check GitHub right now\n'
   fi
 }
 
 # ---------------------------------------------------------------------
-#  terminal width helper
+#  interactive update prompt on connect
 # ---------------------------------------------------------------------
-tx_cols() {
-  local c=""
-  if [[ -t 1 ]]; then c=$(tput cols 2>/dev/null); fi
-  [[ -z "$c" || "$c" -lt 1 ]] 2>/dev/null && c=80
-  printf '%s' "$c"
-}
+tx_update_prompt() {
+  [[ "${TX_AUTOUPDATE:-1}" == 1 ]] || return 0
+  [[ -t 0 && -t 1 ]] || return 0
+  local lv out rv rb
+  lv=$(tx_local_ver)
+  out=$(tx_remote_ver 2>/dev/null) || return 0
+  read -r rv rb <<< "$out"
+  tx_ver_gt "$rv" "$lv" || return 0
 
-# ---------------------------------------------------------------------
-#  SFETCH
-# ---------------------------------------------------------------------
-tx_bits() { local n=$1 s="" i; for ((i=1; i<=n; i++)); do s+=$(( RANDOM & 1 )); (( i % 4 == 0 && i < n )) && s+=" "; done; printf '%s' "$s"; }
+  local Y="${E:-$'\033'}[1;93m" G="${E:-$'\033'}[1;92m" R="${E:-$'\033'}[1;91m" X="${E:-$'\033'}[0m"
+  printf '\n%s┌────────────────────────────────────────────────┐%s\n' "$G" "$X"
+  printf '%s│%s %s[*] Theam-X update available%s                  %s│%s\n' "$G" "$X" "$Y" "$X" "$G" "$X"
+  printf '%s│%s    current: v%-10s  new: v%-10s   %s│%s\n' "$G" "$X" "$lv" "$rv" "$G" "$X"
+  printf '%s└────────────────────────────────────────────────┘%s\n' "$G" "$X"
+  printf '%sInstall now? [y/N] %s' "$Y" "$X"
 
-tx_sfetch() {
-  local E=$'\033' g="${E}[1;92m" w="${E}[1;97m" d="${E}[0;32m" x="${E}[0m"
-  local user host os model kern up pk shell term cpu mem disk ip ver virt
-  user=${USER:-$(id -un 2>/dev/null)}; host=$(hostname 2>/dev/null || uname -n)
-
-  if [[ $TX_DEVICE == termux ]]; then
-    os="Android $(getprop ro.build.version.release 2>/dev/null) (Termux)"
-    model="$(getprop ro.product.manufacturer 2>/dev/null) $(getprop ro.product.model 2>/dev/null)"
-  else
-    os=$(grep -m1 '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
-    model=$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null)
-    virt=$(systemd-detect-virt 2>/dev/null)
-    [[ -n $virt && $virt != none ]] && model="${model:+$model }[${virt}]"
-  fi
-  [[ -z "${os// /}" ]] && os=$(uname -sr)
-  [[ -z "${model// /}" ]] && model="$TX_DEVICE"
-  kern=$(uname -r)
-
-  local upsec
-  if { read -r upsec _; } 2>/dev/null </proc/uptime; then
-    upsec=${upsec%.*}; up="$(( upsec / 86400 ))d $(( upsec % 86400 / 3600 ))h $(( upsec % 3600 / 60 ))m"
-  else
-    up=$(uptime -p 2>/dev/null | sed 's/^up //'); up=${up:-n/a}
-  fi
-
-  if command -v dpkg-query >/dev/null 2>&1; then pk="$(dpkg-query -f '.\n' -W 2>/dev/null | wc -l) (dpkg)"
-  elif command -v rpm >/dev/null 2>&1; then pk="$(rpm -qa 2>/dev/null | wc -l) (rpm)"
-  elif command -v apk >/dev/null 2>&1; then pk="$(apk info 2>/dev/null | wc -l) (apk)"
-  elif command -v pacman >/dev/null 2>&1; then pk="$(pacman -Q 2>/dev/null | wc -l) (pacman)"
-  else pk="n/a"; fi
-
-  shell="${SHELL##*/} ${BASH_VERSION%%(*}"
-  term="${TERM_PROGRAM:-${TERM:-n/a}}"
-
-  cpu=$(grep -m1 -E '^(model name|Hardware)' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//')
-  if [[ -z $cpu && $TX_DEVICE == termux ]]; then cpu=$(getprop ro.soc.model 2>/dev/null); fi
-  [[ -z $cpu ]] && cpu=$(uname -m)
-  cpu="${cpu} ($(nproc 2>/dev/null || echo 1))"
-
-  local k v mt=0 ma=0
-  if [[ -r /proc/meminfo ]]; then
-    while read -r k v _; do
-      case $k in MemTotal:) mt=$v;; MemAvailable:) ma=$v; break;; esac
-    done < /proc/meminfo
-  fi
-  if (( mt > 0 )); then mem="$(( (mt-ma)/1024 ))MB / $(( mt/1024 ))MB ($(( 100*(mt-ma)/mt ))%)"; else mem="n/a"; fi
-
-  local ds du dp
-  read -r _ ds du _ dp _ < <(df -hP "$HV_DISK_PATH" 2>/dev/null | tail -1)
-  disk="${du:-?} / ${ds:-?} (${dp:-?})"
-  ip=$(hv_ip); ver=$(tx_local_ver)
-
-  local cols maxv _v
-  cols=$(tx_cols); maxv=$(( cols - 30 )); (( maxv < 12 )) && maxv=12
-  for _v in os model kern up pk shell term cpu mem disk ip; do printf -v "$_v" '%s' "${!_v:0:$maxv}"; done
-
-  local ul pal i
-  printf -v ul '%*s' $(( ${#user} + ${#host} + 1 )) ''; ul=${ul// /─}
-  pal=""; for i in 0 1 2 3 4 5 6 7; do pal+="${E}[4${i}m   "; done; pal+="${x}"
-
-  local -a info=(
-    "${g}${user}${w}@${g}${host}${x}"
-    "${d}${ul}${x}"
-    "${g}OS       ${w}${os}${x}"
-    "${g}Device   ${w}${model}${x}"
-    "${g}Kernel   ${w}${kern}${x}"
-    "${g}Uptime   ${w}${up}${x}"
-    "${g}Packages ${w}${pk}${x}"
-    "${g}Shell    ${w}${shell}${x}"
-    "${g}Terminal ${w}${term}${x}"
-    "${g}CPU      ${w}${cpu}${x}"
-    "${g}Memory   ${w}${mem}${x}"
-    "${g}Disk     ${w}${disk}${x}"
-    "${g}IP       ${w}${ip}${x}"
-    "${g}Theme    ${w}Theam-X v${ver} ${d}by ${TX_DEV_NAME}${x}"
-    ""
-    "${pal}"
-  )
-
-  local LOGO
-  IFS= read -r -d '' LOGO <<'LOGOEOF'
- _____ __  __
-|_   _|\ \/ /
-  | |   \  /
-  | |   /  \
-  |_|  /_/\_\
-LOGOEOF
-  local -a logo; mapfile -t logo <<< "$LOGO"
-  logo+=("" "$(tx_bits 12)" "$(tx_bits 12)" "$(tx_bits 12)")
-
-  local n=${#info[@]} nl=${#logo[@]} off li l
-  off=$(( (n - nl) / 2 )); (( off < 0 )) && off=0
-  echo
-  for ((i=0; i<n; i++)); do
-    li=$(( i - off )); l=""
-    (( li >= 0 && li < nl )) && l=${logo[li]}
-    printf '  %s%-15s%s  %s\n' "$g" "$l" "$x" "${info[i]}"
-  done
-  echo
-}
-
-# ---------------------------------------------------------------------
-#  DEV
-# ---------------------------------------------------------------------
-tx_dev() {
-  local E=$'\033' g="${E}[1;92m" w="${E}[1;97m" d="${E}[0;32m" x="${E}[0m"
-  local cols inner hl vw
-  cols=$(tx_cols)
-  inner=$(( cols - 2 )); (( inner > 64 )) && inner=64; (( inner < 36 )) && inner=36
-  printf -v hl '%*s' "$inner" ''; hl=${hl// /═}
-  vw=$(( inner - 10 )); (( vw < 1 )) && vw=1
-  local pause=0; [[ -t 1 ]] && pause=0.04
-  _row() {
-    local val="$2" lab="$1"
-    [[ -z "$val" ]] && return
-    while :; do
-      printf '%s║%s %s%-8s%s %s%-*s%s%s║%s\n' \
-        "$d" "$x" "$d" "$lab" "$x" "$w" "$vw" "${val:0:$vw}" "$x" "$d" "$x"
-      val=${val:$vw}; lab=""
-      [[ -z "$val" ]] && break
-      sleep "$pause"
-    done
-  }
-  local title="[ DEVELOPER INFO ]" lp rp s1 s2
-  lp=$(( (inner - ${#title}) / 2 )); (( lp < 0 )) && lp=0
-  rp=$(( inner - ${#title} - lp )); (( rp < 0 )) && rp=0
-  printf -v s1 '%*s' "$lp" ''; printf -v s2 '%*s' "$rp" ''
-  echo
-  printf '%s╔%s╗%s\n' "$d" "$hl" "$x"
-  printf '%s║%s%s%s%s%s║%s\n' "$d" "$g" "$s1" "$title" "$s2" "$d" "$x"
-  printf '%s╠%s╣%s\n' "$d" "$hl" "$x"
-  _row NAME    "$TX_DEV_NAME"
-  _row ROLE    "$TX_DEV_ROLE"
-  _row STACK   "$TX_DEV_TAG"
-  _row GITHUB  "$TX_DEV_GITHUB"
-  _row PROJECT "Theam-X v$(tx_local_ver)"
-  _row REPO    "$TX_DEV_REPO"
-  _row DISCORD "$TX_DEV_DISCORD"
-  _row SITE    "$TX_DEV_SITE"
-  _row DEVICE  "$TX_DEVICE"
-  printf '%s╚%s╝%s\n' "$d" "$hl" "$x"
-  unset -f _row
-  echo
+  local ans
+  read -r -n 1 -t 20 ans </dev/tty 2>/dev/null || ans=""
+  printf '\n'
+  case "$ans" in
+    y|Y)
+      if tx_install_quiet; then
+        printf '%s[+] updated to v%s — active in new shells%s\n' "$G" "$rv" "$X"
+      else
+        printf '%s[x] update failed%s\n' "$R" "$X"
+      fi
+      ;;
+    *)
+      printf '%s[*] skipped — run %stxupdate%s anytime to update%s\n' "$Y" "$G" "$X" "$X"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------
 #  commands
 # ---------------------------------------------------------------------
 hv()       { ( hv_dash ); }
+sfetch()   { ( hv_sfetch ); }
+Sfetch()   { ( hv_sfetch ); }
+dev()      { ( hv_dev ); }
 hvboot()   { ( hv_boot ); }
 matrix()   { ( hv_matrix ); }
-sfetch()   { tx_sfetch "$@"; }
-Sfetch()   { tx_sfetch "$@"; }
-dev()      { tx_dev; }
 txver()    { tx_version; }
-txupdate() { tx_update 0; }
+txupdate() { tx_update; }
 
 # ---------------------------------------------------------------------
 #  prompt theme
@@ -754,17 +756,23 @@ if (return 0 2>/dev/null); then
         printf '\033[1;93m[*]\033[0m %s\n' "$(cat "$TX_HOME/notice")"; rm -f "$TX_HOME/notice"
       fi
       printf '\033[1;92m[+] ready.\033[0;32m  sfetch | dev | hv | matrix | txver | txupdate\033[0m\n'
-      tx_auto_update
+      # interactive update prompt on connect (checks at most once per 24h)
+      local stamp="$TX_HOME/.last_check" now last
+      now=$(printf '%(%s)T' -1); last=$(cat "$stamp" 2>/dev/null || echo 0)
+      if (( now - last >= ${TX_CHECK_INTERVAL:-86400} )); then
+        echo "$now" > "$stamp" 2>/dev/null
+        tx_update_prompt
+      fi
     fi
   fi
 else
   case "${1:-sfetch}" in
-    sfetch|Sfetch) tx_sfetch ;;
-    dev)           tx_dev ;;
+    sfetch|Sfetch) hv_sfetch ;;
+    dev)           hv_dev ;;
     dash|hv)       hv_dash ;;
     boot)          hv_boot ;;
     matrix)        hv_matrix ;;
-    update)        tx_update 0 ;;
+    update)        tx_update ;;
     version|ver)   tx_version ;;
     *) echo "usage: $0 {sfetch|dev|dash|boot|matrix|update|version}"; exit 1 ;;
   esac
