@@ -325,7 +325,7 @@ hv_stats_slow() {
 }
 
 # ---------------------------------------------------------------------
-#  LIVE MONITOR (hv)
+#  LIVE MONITOR
 # ---------------------------------------------------------------------
 hv_build_dash() {
   LINES=()
@@ -682,12 +682,12 @@ tx_update_prompt() {
   read -r rv rb <<< "$out"
   tx_ver_gt "$rv" "$lv" || return 0
 
-  local Y="${E:-$'\033'}[1;93m" G="${E:-$'\033'}[1;92m" R="${E:-$'\033'}[1;91m" X="${E:-$'\033'}[0m"
-  printf '\n%s┌────────────────────────────────────────────────┐%s\n' "$G" "$X"
-  printf '%s│%s %s[*] Theam-X update available%s                  %s│%s\n' "$G" "$X" "$Y" "$X" "$G" "$X"
-  printf '%s│%s    current: v%-10s  new: v%-10s   %s│%s\n' "$G" "$X" "$lv" "$rv" "$G" "$X"
-  printf '%s└────────────────────────────────────────────────┘%s\n' "$G" "$X"
-  printf '%sInstall now? [y/N] %s' "$Y" "$X"
+  local PY="${E:-$'\033'}[1;93m" PG="${E:-$'\033'}[1;92m" PR="${E:-$'\033'}[1;91m" PX="${E:-$'\033'}[0m"
+  printf '\n%s┌────────────────────────────────────────────────┐%s\n' "$PG" "$PX"
+  printf '%s│%s %s[*] Theam-X update available%s                  %s│%s\n' "$PG" "$PX" "$PY" "$PX" "$PG" "$PX"
+  printf '%s│%s    current: v%-10s  new: v%-10s   %s│%s\n' "$PG" "$PX" "$lv" "$rv" "$PG" "$PX"
+  printf '%s└────────────────────────────────────────────────┘%s\n' "$PG" "$PX"
+  printf '%sInstall now? [y/N] %s' "$PY" "$PX"
 
   local ans
   read -r -n 1 -t 20 ans </dev/tty 2>/dev/null || ans=""
@@ -695,112 +695,137 @@ tx_update_prompt() {
   case "$ans" in
     y|Y)
       if tx_install_quiet; then
-        printf '%s[+] updated to v%s — active in new shells%s\n' "$G" "$rv" "$X"
+        printf '%s[+] updated to v%s — active in new shells%s\n' "$PG" "$rv" "$PX"
       else
-        printf '%s[x] update failed%s\n' "$R" "$X"
+        printf '%s[x] update failed%s\n' "$PR" "$PX"
       fi
       ;;
     *)
-      printf '%s[*] skipped — run %stxupdate%s anytime to update%s\n' "$Y" "$G" "$X" "$X"
+      printf '%s[*] skipped — run %stxupdate%s anytime to update%s\n' "$PY" "$PG" "$PX" "$PX"
       ;;
   esac
 }
 
 # =====================================================================
-#  AUTOCOMPLETE  (files, dirs, and Theam-X commands)
+#  AUTOCOMPLETE — files, dirs, commands, ~ and $HOME expansion
 # =====================================================================
+_tx_expand_cur() {
+  local c="$1"
+  case "$c" in
+    "~")   printf '%s/' "$HOME" ;;
+    "~/"*) printf '%s'  "${HOME}/${c#\~/}" ;;
+    *)     printf '%s'  "$c" ;;
+  esac
+}
 
-# Shared file/dir word list — this is what powers `cd p<TAB>` -> `panel`
 _tx_path_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
-  local dir="" base="" path
-  # If user typed "some/dir/pr", split into dir="some/dir/" base="pr"
-  if [[ "$cur" == */* ]]; then
-    dir="${cur%/*}/"
-    base="${cur##*/}"
+  local curx; curx=$(_tx_expand_cur "$cur")
+  local dir="" base=""
+
+  if [[ "$curx" == */* ]]; then
+    dir="${curx%/*}/"; base="${curx##*/}"
   else
-    dir=""
-    base="$cur"
+    base="$curx"
   fi
-  # Build candidates relative to $dir
+
   local -a cands=()
   local entry name
   shopt -s nullglob dotglob 2>/dev/null
-  for entry in "$dir"*; do
-    name="${entry##*/}"
-    if [[ -z "$base" || "$name" == "$base"* ]]; then
-      cands+=("$entry")
-    fi
-  done
-  shopt -u nullglob dotglob 2>/dev/null
-  # If nothing matched literally, try case-insensitive
-  if (( ${#cands[@]} == 0 )) && [[ -n "$base" ]]; then
-    shopt -s nullglob dotglob nocaseglob 2>/dev/null
+
+  if [[ -n "$dir" ]]; then
     for entry in "$dir"*; do
       name="${entry##*/}"
-      if [[ "${name,,}" == "${base,,}"* ]]; then
-        cands+=("$entry")
-      fi
+      [[ -z "$base" || "$name" == "$base"* ]] && cands+=("$entry")
     done
-    shopt -u nullglob dotglob nocaseglob 2>/dev/null
+  else
+    for entry in *; do
+      [[ -z "$base" || "$entry" == "$base"* ]] && cands+=("$entry")
+    done
   fi
-  # Append / to directories, add space after files
+
+  if (( ${#cands[@]} == 0 )) && [[ -n "$base" ]]; then
+    shopt -s nullglob dotglob nocaseglob 2>/dev/null
+    if [[ -n "$dir" ]]; then
+      for entry in "$dir"*; do
+        name="${entry##*/}"
+        [[ "${name,,}" == "${base,,}"* ]] && cands+=("$entry")
+      done
+    else
+      for entry in *; do
+        [[ "${entry,,}" == "${base,,}"* ]] && cands+=("$entry")
+      done
+    fi
+    shopt -u nocaseglob 2>/dev/null
+  fi
+  shopt -u nullglob dotglob 2>/dev/null
+
+  # Re-prefix with ~ if the user typed ~
   local -a out=()
   local c
   for c in "${cands[@]}"; do
-    if [[ -d "$c" ]]; then
-      out+=("$c/")
-    else
-      out+=("$c")
+    if [[ "$cur" == "~" || "$cur" == "~/"* ]]; then
+      c="~/${c#"$HOME"/}"
     fi
+    if [[ -d "${c}" ]]; then out+=("$c/"); else out+=("$c"); fi
   done
   COMPREPLY=("${out[@]}")
 }
 
-# cd -> only dirs
 _tx_cd_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
+  local curx; curx=$(_tx_expand_cur "$cur")
   local dir="" base=""
-  if [[ "$cur" == */* ]]; then
-    dir="${cur%/*}/"; base="${cur##*/}"
+  if [[ "$curx" == */* ]]; then
+    dir="${curx%/*}/"; base="${curx##*/}"
   else
-    base="$cur"
+    base="$curx"
   fi
+
   local -a cands=()
   local entry name
   shopt -s nullglob dotglob 2>/dev/null
-  for entry in "$dir"*; do
-    [[ -d "$entry" ]] || continue
-    name="${entry##*/}"
-    if [[ -z "$base" || "$name" == "$base"* ]]; then
-      cands+=("$entry/")
-    fi
-  done
-  if (( ${#cands[@]} == 0 )) && [[ -n "$base" ]]; then
-    shopt -s nullglob dotglob nocaseglob 2>/dev/null
+  if [[ -n "$dir" ]]; then
     for entry in "$dir"*; do
       [[ -d "$entry" ]] || continue
       name="${entry##*/}"
-      [[ "${name,,}" == "${base,,}"* ]] && cands+=("$entry/")
+      [[ -z "$base" || "$name" == "$base"* ]] && cands+=("$entry")
     done
-    shopt -u nullglob dotglob nocaseglob 2>/dev/null
+  else
+    for entry in *; do
+      [[ -d "$entry" ]] || continue
+      [[ -z "$base" || "$entry" == "$base"* ]] && cands+=("$entry")
+    done
+  fi
+  if (( ${#cands[@]} == 0 )) && [[ -n "$base" ]]; then
+    shopt -s nullglob dotglob nocaseglob 2>/dev/null
+    if [[ -n "$dir" ]]; then
+      for entry in "$dir"*; do
+        [[ -d "$entry" ]] || continue
+        name="${entry##*/}"
+        [[ "${name,,}" == "${base,,}"* ]] && cands+=("$entry")
+      done
+    else
+      for entry in *; do
+        [[ -d "$entry" ]] || continue
+        [[ "${entry,,}" == "${base,,}"* ]] && cands+=("$entry")
+      done
+    fi
+    shopt -u nocaseglob 2>/dev/null
   fi
   shopt -u nullglob dotglob 2>/dev/null
-  COMPREPLY=("${cands[@]}")
+
+  local -a out=()
+  local c
+  for c in "${cands[@]}"; do
+    if [[ "$cur" == "~" || "$cur" == "~/"* ]]; then
+      c="~/${c#"$HOME"/}"
+    fi
+    out+=("$c/")
+  done
+  COMPREPLY=("${out[@]}")
 }
 
-# generic command -> file/dir
-_tx_generic_complete() {
-  _tx_path_complete
-}
-
-# completion for all common commands the theme users touch
-complete -o bashdefault -o default -F _tx_cd_complete cd pushd 2>/dev/null
-complete -o bashdefault -o default -F _tx_path_complete ls cat less more head tail cp mv rm mkdir rmdir touch chmod chown ln vim nano vi nvim 2>/dev/null
-complete -o bashdefault -o default -F _tx_path_complete find grep rg tar zip unzip 2>/dev/null
-complete -o bashdefault -o default -F _tx_path_complete scp rsync ssh python python3 node npm 2>/dev/null
-
-# Theam-X commands completion (each only when the shell is Theam-X'd)
 _tx_theamx_complete() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   local cmds="sfetch Sfetch dev hv hvboot matrix txver txupdate"
@@ -811,6 +836,20 @@ _tx_theamx_complete() {
   done
   COMPREPLY=("${matches[@]}")
 }
+
+# force-register every completion. Called on each prompt so bash-completion
+# (sourced from /usr/share/bash-completion/bash_completion in ~/.bashrc)
+# can never overwrite our cd/path completers.
+_tx_register_complete() {
+  complete -o bashdefault -o default -F _tx_cd_complete cd pushd 2>/dev/null
+  complete -o bashdefault -o default -F _tx_path_complete \
+    ls cat less more head tail cp mv rm mkdir rmdir touch chmod chown \
+    ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
+    ssh python python3 node npm 2>/dev/null
+  complete -o bashdefault -o default -F _tx_theamx_complete \
+    sfetch Sfetch dev hv hvboot matrix txver txupdate 2>/dev/null
+}
+_tx_register_complete
 
 # ---------------------------------------------------------------------
 #  commands
@@ -845,31 +884,32 @@ hv_prompt() {
 if (return 0 2>/dev/null); then
   if [[ $- == *i* ]]; then
     [[ "$PROMPT_COMMAND" == *hv_prompt* ]] || PROMPT_COMMAND="hv_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+    [[ "$PROMPT_COMMAND" == *_tx_register_complete* ]] || PROMPT_COMMAND="_tx_register_complete;${PROMPT_COMMAND}"
+
     if [[ -t 1 && -z "${HV_BOOTED:-}" ]]; then
       export HV_BOOTED=1
       if [[ -z "${TMUX:-}" && "${HV_QUICK:-0}" != 1 ]]; then
-        hv_stamp="${XDG_RUNTIME_DIR:-/tmp}/.hv_boot_${UID:-0}"
-        hv_now=$(printf '%(%s)T' -1); hv_last=$(cat "$hv_stamp" 2>/dev/null || echo 0)
-        if (( hv_now - hv_last > ${HV_COOLDOWN:-300} )); then
+        tx_stamp="${XDG_RUNTIME_DIR:-${TMPDIR:-$HOME}}/.hv_boot_${UID:-0}"
+        tx_now=$(printf '%(%s)T' -1); tx_last=$(cat "$tx_stamp" 2>/dev/null || echo 0)
+        if (( tx_now - tx_last > ${HV_COOLDOWN:-300} )); then
           ( hv_boot )
-          echo "$hv_now" > "$hv_stamp" 2>/dev/null
+          echo "$tx_now" > "$tx_stamp" 2>/dev/null || true
         fi
-        unset hv_stamp hv_now hv_last
+        unset tx_stamp tx_now tx_last
       fi
       if [[ -s "$TX_HOME/notice" ]]; then
         printf '\033[1;93m[*]\033[0m %s\n' "$(cat "$TX_HOME/notice")"; rm -f "$TX_HOME/notice"
       fi
       printf '\033[1;92m[+] ready.\033[0;32m  sfetch | dev | hv | matrix | txver | txupdate\033[0m\n'
-      # interactive update prompt on connect (checks at most once per 24h)
-      local stamp="$TX_HOME/.last_check" now last
-      now=$(printf '%(%s)T' -1); last=$(cat "$stamp" 2>/dev/null || echo 0)
-      if (( now - last >= ${TX_CHECK_INTERVAL:-86400} )); then
-        echo "$now" > "$stamp" 2>/dev/null
+
+      tx_stamp="$TX_HOME/.last_check"
+      tx_now=$(printf '%(%s)T' -1); tx_last=$(cat "$tx_stamp" 2>/dev/null || echo 0)
+      if (( tx_now - tx_last >= ${TX_CHECK_INTERVAL:-86400} )); then
+        echo "$tx_now" > "$tx_stamp" 2>/dev/null || true
         tx_update_prompt
       fi
+      unset tx_stamp tx_now tx_last
     fi
-    # command completion for Theam-X commands themselves
-    complete -o bashdefault -o default -F _tx_theamx_complete sfetch Sfetch dev hv hvboot matrix txver txupdate 2>/dev/null
   fi
 else
   case "${1:-sfetch}" in
