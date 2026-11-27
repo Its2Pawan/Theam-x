@@ -2053,17 +2053,46 @@ _tx_ai_default_model() {
   esac
 }
 
+_tx_ai_default_system() {
+  local arch pkgmgr="apt"
+  arch=$(uname -m 2>/dev/null || echo unknown)
+  if [[ $TX_DEVICE == termux ]]; then
+    cat <<EOF
+You are a fast Termux (Android ${arch}) terminal copilot.
+STRICT RULES:
+1. Give instructions ONLY for Termux (pkg/bash/Android). NEVER mention Linux VPS, Ubuntu, Debian, CentOS, apt, or sudo unless the user explicitly asks.
+2. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands.
+3. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
+EOF
+  else
+    command -v dnf >/dev/null 2>&1 && pkgmgr="dnf"
+    command -v apk >/dev/null 2>&1 && pkgmgr="apk"
+    command -v pacman >/dev/null 2>&1 && pkgmgr="pacman"
+    cat <<EOF
+You are a fast Linux VPS (${OSNAME:-Linux} ${arch}, ${pkgmgr}) terminal copilot.
+STRICT RULES:
+1. Give instructions ONLY for this Linux VPS (${pkgmgr}). NEVER mention Termux or unrelated distros unless the user explicitly asks.
+2. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands.
+3. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
+EOF
+  fi
+}
+
 _tx_ai_load() {
   TX_AI_TYPE=""
   TX_AI_BASE_URL=""
   TX_AI_API_KEY=""
   TX_AI_MODEL=""
-  TX_AI_SYSTEM="You are a practical Linux VPS and Termux terminal assistant (${TX_DEVICE}). Give direct, complete, ready-to-run commands and concise code fixes without unnecessary clarifying questions."
+  TX_AI_SYSTEM="DEFAULT"
   TX_AI_TEMP="0.7"
   TX_AI_MAX_TOKENS="4096"
   TX_AI_TIMEOUT="45"
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
+  case "$TX_AI_SYSTEM" in
+    ""|"You are a concise, accurate Linux VPS and Termux terminal assistant."*|"You are a practical Linux VPS and Termux terminal assistant"*)
+      TX_AI_SYSTEM="DEFAULT" ;;
+  esac
 }
 
 _tx_ai_save() {
@@ -2346,23 +2375,29 @@ PY
 
 _tx_ai_render() {
   # Lightweight colored markdown renderer for terminal readability
-  local in_code=0 line
+  local in_code=0 line trimmed
   while IFS= read -r line; do
-    if [[ "$line" == \`\`\`* ]]; then
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$trimmed" == \`\`\`* ]]; then
       if (( in_code )); then
         in_code=0
         printf '%s  └────────────────────────────────────────%s\n' "$TX_CD" "$TX_CX"
       else
         in_code=1
-        local lang="${line#\`\`\`}"
+        local lang="${trimmed#\`\`\`}"
+        lang="${lang// /}"
         printf '%s  ┌─ %s%s\n' "$TX_CD" "${lang:-code}" "$TX_CX"
       fi
       continue
     fi
     if (( in_code )); then
-      printf '%s  │ %s%s%s\n' "$TX_CD" "$TX_CW" "$line" "$TX_CX"
-    elif [[ "$line" == \#\#\#* || "$line" == \#\#* || "$line" == \#* ]]; then
-      local hdr="${line#\#}"; hdr="${hdr#\#}"; hdr="${hdr#\#}"; hdr="${hdr# }"
+      printf '%s  │ %s%s%s\n' "$TX_CD" "$TX_CW" "$trimmed" "$TX_CX"
+    elif [[ "$trimmed" == "---" || "$trimmed" == "***" || "$trimmed" == "___" ]]; then
+      continue
+    elif [[ "$trimmed" == \#* ]]; then
+      local hdr="${trimmed##\#}"
+      while [[ "$hdr" == \#* ]]; do hdr="${hdr#\#}"; done
+      hdr="${hdr# }"
       printf '%s%s%s\n' "$TX_CA" "$hdr" "$TX_CX"
     else
       line="${line//\*\*/}"
@@ -2372,11 +2407,15 @@ _tx_ai_render() {
 }
 
 _tx_ai_extract_cmds() {
-  # Extracts runnable lines from ```bash/sh/``` code blocks in stdin
+  # Extracts runnable lines from ```bash/sh/``` code blocks (including indented ones)
   awk '
-    /^```/ {
+    {
+      t = $0
+      sub(/^[[:space:]]+/, "", t)
+    }
+    t ~ /^```/ {
       if (!in_blk) {
-        lang = substr($0, 4)
+        lang = substr(t, 4)
         gsub(/[[:space:]]+/, "", lang)
         if (lang == "" || lang == "bash" || lang == "sh" || lang == "zsh" || lang == "shell") {
           in_blk = 1
@@ -2386,17 +2425,21 @@ _tx_ai_extract_cmds() {
       }
       next
     }
-    in_blk && $0 !~ /^[[:space:]]*(#|$)/ {
-      sub(/^[[:space:]]*\$[[:space:]]*/, "")
-      print
+    in_blk && t !~ /^(#|$)/ {
+      sub(/^\$[[:space:]]*/, "", t)
+      print t
     }
   '
 }
 
 _tx_ai_extract_code_block() {
-  # Extracts the first (or largest) code block content from stdin
+  # Extracts the largest code block content (including indented ones)
   awk '
-    /^```/ {
+    {
+      t = $0
+      sub(/^[[:space:]]+/, "", t)
+    }
+    t ~ /^```/ {
       if (!in_blk) { in_blk = 1; cur = "" }
       else {
         in_blk = 0
@@ -2412,9 +2455,13 @@ _tx_ai_extract_code_block() {
 _tx_ai_call() {
   # args: system_override(or empty), role/msg pairs...
   local sys_ovr="$1"; shift
-  local sys="${sys_ovr:-$TX_AI_SYSTEM}"
-  if [[ -z $sys_ovr ]]; then
-    sys="${sys} [Env: device=${TX_DEVICE}, os=${OSNAME:-$(uname -s 2>/dev/null || echo Linux)}, shell=bash, cwd=${PWD}]"
+  local sys="$sys_ovr"
+  if [[ -z $sys ]]; then
+    if [[ "${TX_AI_SYSTEM:-DEFAULT}" == "DEFAULT" ]]; then
+      sys=$(_tx_ai_default_system)
+    else
+      sys="${TX_AI_SYSTEM} [Env: device=${TX_DEVICE}, os=${OSNAME:-$(uname -s 2>/dev/null || echo Linux)}, arch=$(uname -m 2>/dev/null || echo unknown), cwd=${PWD}]"
+    fi
   fi
   local -a msgs=("$@")
   local tmp="$TX_HOME/.aitmp.$$"
@@ -2571,6 +2618,32 @@ _tx_ai_cmd_helper() {
   fi
 }
 
+_tx_ai_exec_with_autofix() {
+  local cmd="$1"
+  [[ -n $cmd ]] || return 1
+  local logf="$TX_HOME/.airun.$$" ec=0
+  eval "$cmd" 2>&1 | tee "$logf"
+  ec=${PIPESTATUS[0]}
+  if (( ec != 0 )); then
+    _tx_warn "command exited with code ${ec}"
+    if [[ -t 0 && -t 1 ]]; then
+      printf '%sAsk /ai to fix this error? [Y/n] %s' "$TX_CY" "$TX_CX"
+      local fix_ans=""
+      read -r -n 1 fix_ans </dev/tty 2>/dev/null || fix_ans="n"
+      echo
+      if [[ "$fix_ans" != n && "$fix_ans" != N ]]; then
+        local err_tail
+        err_tail=$(tail -n 30 "$logf" 2>/dev/null || true)
+        rm -f "$logf"
+        _tx_ai_do "Fix this failed command: ${cmd}\nExit code: ${ec}\nOutput:\n${err_tail}"
+        return $?
+      fi
+    fi
+  fi
+  rm -f "$logf"
+  return "$ec"
+}
+
 _tx_ai_run_interactive_cmd() {
   local cmd="$1"
   [[ -n $cmd ]] || return 1
@@ -2586,25 +2659,8 @@ _tx_ai_run_interactive_cmd() {
     ans="y"
   fi
   if [[ "$ans" == y || "$ans" == Y ]]; then
-    local logf="$TX_HOME/.airun.$$" ec=0
-    eval "$cmd" 2>&1 | tee "$logf"
-    ec=${PIPESTATUS[0]}
-    if (( ec != 0 )); then
-      _tx_warn "command exited with code ${ec}"
-      printf '%sAsk /ai to fix this error? [Y/n] %s' "$TX_CY" "$TX_CX"
-      local fix_ans=""
-      read -r -n 1 fix_ans </dev/tty 2>/dev/null || fix_ans="n"
-      echo
-      if [[ "$fix_ans" != n && "$fix_ans" != N ]]; then
-        local err_tail
-        err_tail=$(tail -n 30 "$logf" 2>/dev/null || true)
-        rm -f "$logf"
-        _tx_ai_do "Fix this failed command: ${cmd}\nExit code: ${ec}\nOutput:\n${err_tail}"
-        return $?
-      fi
-    fi
-    rm -f "$logf"
-    return "$ec"
+    _tx_ai_exec_with_autofix "$cmd"
+    return $?
   fi
   return 0
 }
@@ -2907,6 +2963,41 @@ EOF
     local ans
     ans=$(_tx_ai_call "" "user" "$prompt") || return 1
     printf '%s\n' "$ans" | _tx_ai_render
+    if [[ -t 0 && -t 1 && -z $piped ]]; then
+      local -a qcmds=()
+      local qc
+      while IFS= read -r qc; do
+        [[ -n $qc ]] && qcmds+=("$qc")
+      done < <(printf '%s\n' "$ans" | _tx_ai_extract_cmds)
+      if (( ${#qcmds[@]} > 0 && ${#qcmds[@]} <= 6 )); then
+        echo
+        local qi
+        for ((qi=0; qi<${#qcmds[@]}; qi++)); do
+          printf '  %s[%d]%s %s\n' "$TX_CA" $((qi+1)) "$TX_CX" "${qcmds[qi]}"
+        done
+        local qpick=""
+        if (( ${#qcmds[@]} == 1 )); then
+          printf '%sRun command? [1=run / e=edit / Enter=skip]: %s' "$TX_CY" "$TX_CX"
+        else
+          printf '%sRun command? [1-%d / a=all / Enter=skip]: %s' "$TX_CY" "${#qcmds[@]}" "$TX_CX"
+        fi
+        read -r qpick </dev/tty 2>/dev/null || qpick=""
+        if [[ "$qpick" == "a" || "$qpick" == "A" ]]; then
+          local qall=""
+          printf -v qall '%s\n' "${qcmds[@]}"
+          _tx_ai_exec_with_autofix "${qall%$'\n'}"
+        elif [[ "$qpick" == "y" || "$qpick" == "Y" || "$qpick" == "1" ]]; then
+          _tx_ai_exec_with_autofix "${qcmds[0]}"
+        elif [[ "$qpick" == "e" || "$qpick" == "E" ]]; then
+          local ecmd="${qcmds[0]}"
+          printf '%sEdit cmd: %s' "$TX_CA" "$TX_CX"
+          read -r -e -i "$ecmd" ecmd </dev/tty 2>/dev/null || read -r ecmd </dev/tty
+          [[ -n $ecmd ]] && _tx_ai_exec_with_autofix "$ecmd"
+        elif _tx_is_int "$qpick" && (( qpick >= 1 && qpick <= ${#qcmds[@]} )); then
+          _tx_ai_exec_with_autofix "${qcmds[qpick-1]}"
+        fi
+      fi
+    fi
   else
     _tx_ai_chat
   fi
