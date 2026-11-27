@@ -13,7 +13,7 @@
 **Hacker-style terminal theme, system toolkit & built-in `/ai` assistant for VPS and Termux**
 7 color themes · 4 prompt styles · 3 matrix rain modes · `/ai` chat & command helper · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-2.4.0-brightgreen)
+![version](https://img.shields.io/badge/version-2.5.0-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
@@ -73,10 +73,15 @@ On your first run of `/ai`, Theam-X asks you to configure:
 /ai install cloudflare in termux # One-shot answer (formatted for terminal)
 cat error.log | /ai summarize    # Pipe logs directly to AI
 /ai -c find files larger than 100M  # Generate command and confirm before running
-/ai do install cloudflared       # Interactive command runner (auto-fixes errors!)
-/ai code app.py                  # Analyze code file for bugs & improvements
-/ai fix script.sh                # Fix bugs in file (creates .bak backup)
-/ai explain nginx.conf           # Explain any code file or command
+/ai make hello.py simple http server # Create new file (Save or Save & Run!)
+/ai edit hello.py add /health route   # Edit file with diff preview & .bak backup
+/ai agent "build & test backup.sh"   # Multi-step CLI agent (ls, read, write, run)
+/ai do install cloudflared           # Interactive command runner (auto-fixes errors!)
+/ai code app.py                      # Analyze code file for bugs & improvements
+/ai fix script.sh                    # Fix bugs in file (creates .bak backup)
+/ai diff | /ai commit | /ai project  # Git diff review, commit msg, codebase summary
+/ai err "python3 app.py"             # Run command and auto-diagnose any error
+/ai explain nginx.conf               # Explain any code file or command
 airoute add fast openai https://api.groq.com/openai/v1 gsk_... llama-3.3-70b-versatile
 airoute add code anthropic https://api.anthropic.com/v1 sk-ant-... claude-3-5-sonnet-latest
 /ai mood coder                   # Mood: fast | coder | teacher | strict | friendly

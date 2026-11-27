@@ -1292,15 +1292,16 @@ tx_help() {
 ${TX_CA}Small AI Assistant (/ai | airoute | aimem)${TX_CX}
   /ai                         Setup wizard (first run) or interactive AI chat
   /ai <prompt>                Ask AI directly (auto-routes by mood & recalls memory)
-  /ai -c <task>               Generate one shell command & confirm before running
-  /ai do <task>               Interactive AI command runner (runs & auto-fixes errors)
-  /ai code <file> [question]  Analyze/review a code file for bugs & improvements
-  /ai fix <file> [issue]      Find bugs in file & optionally apply fix (.bak saved)
+  /ai make <file> <desc>      Create a new script/app file (Save / Save & Run)
+  /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
+  /ai agent [-y] <goal>       Multi-step CLI AI agent (ls, read, write, run, verify)
+  /ai do <task> | -c <task>   Run generated command(s) with error auto-fix
+  /ai code <f> | fix <f>      Analyze/review code or fix bugs in file
   /ai explain <file|cmd>      Explain a code file or shell command
+  /ai diff | commit | project Git diff review, AI commit msg, codebase scan
+  /ai err <command>           Run command and auto-diagnose/fix any error
   airoute [add|use|list|auto] Multi-provider routes & mood auto-routing
-  /ai mood <mode>             Mood: fast | coder | teacher | strict | friendly
-  aimem [add|list|search|del] Persistent AGY-style memory (global + per-project)
-  /remember <fact>            Save a persistent fact into AI memory immediately
+  aimem [add|list|search|del] Persistent AGY-style memory (/remember <fact>)
   /ai config | status | test  Configure base_url / api_key / model / type / etcs
 
 ${TX_CA}Theme & Visuals${TX_CX}
@@ -3177,6 +3178,307 @@ _tx_ai_fix() {
   fi
 }
 
+_tx_ai_write_file() {
+  local path="$1" content="$2" auto_yes="${3:-0}"
+  [[ -n $path ]] || { _tx_err "missing file path"; return 1; }
+  local parent="${path%/*}"
+  if [[ -f "$path" ]]; then
+    printf '%s[diff]%s %s\n' "$TX_CA" "$TX_CX" "$path"
+    if command -v diff >/dev/null 2>&1; then
+      printf '%s' "$content" | diff -u "$path" - 2>/dev/null | head -n 40 || true
+    fi
+  else
+    printf '%s[new file]%s %s (%d lines)\n' "$TX_CA" "$TX_CX" "$path" "$(printf '%s' "$content" | wc -l | tr -d ' ')"
+  fi
+  if (( ! auto_yes )) && [[ -t 0 && -t 1 ]]; then
+    printf '%sWrite %s? [y/N] %s' "$TX_CY" "$path" "$TX_CX"
+    local ans=""
+    read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+    echo
+    [[ "$ans" == y || "$ans" == Y ]] || { _tx_warn "skipped ${path}"; return 1; }
+  fi
+  [[ "$parent" != "$path" && -n $parent ]] && mkdir -p "$parent"
+  [[ -f "$path" ]] && cp -p -- "$path" "${path}.bak"
+  printf '%s' "$content" > "$path" || return 1
+  if [[ "$content" == \#!* ]]; then
+    chmod +x "$path" 2>/dev/null || true
+  fi
+  _tx_say "wrote ${path}$([[ -f "${path}.bak" ]] && echo " (backup: ${path}.bak)")"
+  return 0
+}
+
+_tx_ai_run_file() {
+  local path="$1"
+  [[ -f "$path" ]] || return 1
+  local runner=""
+  case "$path" in
+    *.py)  runner="py $(printf '%q' "$path")" ;;
+    *.sh)  runner="bash $(printf '%q' "$path")" ;;
+    *.js)  runner="node $(printf '%q' "$path")" ;;
+    *)     [[ -x "$path" ]] && runner="$(printf '%q' "./$path")" || runner="bash $(printf '%q' "$path")" ;;
+  esac
+  printf '%s[exec]%s %s\n' "$TX_CA" "$TX_CX" "$runner"
+  _tx_ai_exec_with_autofix "$runner"
+}
+
+_tx_ai_make() {
+  local first="${1:-}" target="" desc=""
+  [[ -n $first ]] || { _tx_err "usage: /ai make <filename|description> [requirements]"; return 1; }
+  if [[ "$first" == *.* || "$first" == */* ]]; then
+    target="$first"; shift
+    desc="${*:-Create a clean, working ${target} script/file.}"
+  else
+    desc="$*"
+  fi
+  local sys="You are an expert developer on ${TX_DEVICE}. Output line 1 as 'FILE: <filename>' (use ${target:-a suitable filename}) followed by the COMPLETE working code inside a single \`\`\` code block. No extra prose."
+  local reply _TX_AI_HINT_MODE="code"
+  reply=$(_tx_ai_call "$sys" "user" "Create file ${target:+(path: $target) }for: ${desc}") || return 1
+  if [[ -z $target ]]; then
+    target=$(printf '%s\n' "$reply" | awk '/^FILE:/{sub(/^FILE:[[:space:]]*/,""); print $1; exit}')
+    [[ -z $target ]] && target="script.sh"
+  fi
+  local code
+  code=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+  [[ -n $code ]] || { printf '%s\n' "$reply" | _tx_ai_render; _tx_err "no code block returned"; return 1; }
+
+  printf '\n%s=== GENERATED: %s ===%s\n' "$TX_C2" "$target" "$TX_CX"
+  printf '%s\n' "$code" | awk '{printf "%3d | %s\n", NR, $0}'
+  if [[ -t 0 && -t 1 ]]; then
+    printf '\n%sAction: [s] Save  [r] Save & Run  [n] Cancel : %s' "$TX_CY" "$TX_CX"
+    local act=""
+    read -r -n 1 act </dev/tty 2>/dev/null || act="n"
+    echo
+    case "$act" in
+      s|S) _tx_ai_write_file "$target" "$code" 1 ;;
+      r|R) _tx_ai_write_file "$target" "$code" 1 && _tx_ai_run_file "$target" ;;
+      *)   _tx_warn "cancelled" ;;
+    esac
+  else
+    printf '%s\n' "$code"
+  fi
+}
+
+_tx_ai_edit() {
+  local f="${1:-}"
+  [[ -n $f && $# -ge 2 ]] || { _tx_err "usage: /ai edit <file> <instruction>"; return 1; }
+  shift
+  local inst="$*"
+  local content
+  content=$(_tx_ai_read_file_ctx "$f") || return 1
+  local sys="You are an expert developer editing ${f}. Return a 1-line summary followed by the COMPLETE updated file inside a single \`\`\` code block."
+  local reply _TX_AI_HINT_MODE="code"
+  reply=$(_tx_ai_call "$sys" "user" "File: ${f}"$'\n'"Edit instruction: ${inst}"$'\n\n'"Current file:"$'\n'"\`\`\`"$'\n'"${content}"$'\n'"\`\`\`") || return 1
+  local updated
+  updated=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+  [[ -n $updated ]] || { printf '%s\n' "$reply" | _tx_ai_render; _tx_err "no updated code block returned"; return 1; }
+  _tx_ai_write_file "$f" "$updated" 0
+}
+
+_tx_ai_agent() {
+  local auto=0
+  if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
+    auto=1; shift
+  fi
+  local goal="$*"
+  [[ -n $goal ]] || { _tx_err "usage: /ai agent [-y] <goal>"; return 1; }
+
+  local sys="You are an autonomous CLI coding & system agent on ${TX_DEVICE} (${OSNAME:-Linux}), cwd=${PWD}.
+Work step-by-step using EXACTLY ONE action per reply:
+- ACTION: LS <dir>
+- ACTION: READ <file>
+- ACTION: WRITE <file>
+\`\`\`
+<complete file contents>
+\`\`\`
+- ACTION: RUN <shell_command>
+- ACTION: REMEMBER <short_fact>
+- ACTION: DONE
+<concise summary of what was accomplished>
+
+Always verify files/commands after writing when appropriate, and finish with ACTION: DONE."
+
+  local -a hist=("user" "Goal: ${goal}")
+  local step reply action arg body obs cmd_out ec ans
+  for ((step=1; step<=8; step++)); do
+    printf '%s[agent step %d/8]%s thinking...\n' "$TX_CD" "$step" "$TX_CX"
+    reply=$(_tx_ai_call "$sys" "${hist[@]}") || return 1
+    hist+=("assistant" "$reply")
+
+    action=$(printf '%s\n' "$reply" | awk '/^ACTION:/{sub(/^ACTION:[[:space:]]*/,""); print $1; exit}')
+    arg=$(printf '%s\n' "$reply" | awk '/^ACTION:/{sub(/^ACTION:[[:space:]]*[^[:space:]]+[[:space:]]*/,""); print; exit}')
+
+    case "$action" in
+      DONE)
+        printf '\n%s=== AGENT DONE ===%s\n' "$TX_C2" "$TX_CX"
+        printf '%s\n' "$reply" | sed '/^ACTION:/d' | _tx_ai_render
+        return 0
+        ;;
+      LS)
+        local d="${arg:-.}"
+        printf '%s[ls]%s %s\n' "$TX_CA" "$TX_CX" "$d"
+        obs=$(ls -la "$d" 2>&1 | head -n 60 || true)
+        ;;
+      READ)
+        printf '%s[read]%s %s\n' "$TX_CA" "$TX_CX" "$arg"
+        obs=$(_tx_ai_read_file_ctx "$arg" 2>&1 || true)
+        ;;
+      REMEMBER)
+        _tx_ai_mem_add --project "$arg" >/dev/null 2>&1 || true
+        obs="Saved to project memory: ${arg}"
+        ;;
+      WRITE)
+        body=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+        if [[ -z $body ]]; then
+          obs="ERROR: ACTION: WRITE requires a code block."
+        else
+          if (( ! auto )) && [[ -t 0 && -t 1 ]]; then
+            printf '%s[agent write]%s %s (%d lines)\n' "$TX_CA" "$TX_CX" "$arg" "$(printf '%s' "$body" | wc -l | tr -d ' ')"
+            if [[ -f "$arg" ]] && command -v diff >/dev/null 2>&1; then
+              printf '%s' "$body" | diff -u "$arg" - 2>/dev/null | head -n 30 || true
+            fi
+            printf '%sApprove? [y] Write  [a] Auto-all  [n] Skip : %s' "$TX_CY" "$TX_CX"
+            read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+            echo
+            if [[ "$ans" == a || "$ans" == A ]]; then auto=1; ans="y"; fi
+            if [[ "$ans" == y || "$ans" == Y ]]; then
+              _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
+            else
+              obs="User skipped writing ${arg}."
+            fi
+          else
+            _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
+          fi
+        fi
+        ;;
+      RUN)
+        printf '%s[agent run]%s %s\n' "$TX_CA" "$TX_CX" "$arg"
+        local do_run=1
+        if (( ! auto )) && [[ -t 0 && -t 1 ]]; then
+          printf '%sApprove? [y] Run  [a] Auto-all  [e] Edit  [n] Skip : %s' "$TX_CY" "$TX_CX"
+          read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+          echo
+          case "$ans" in
+            a|A) auto=1 ;;
+            e|E)
+              printf '%sEdit cmd: %s' "$TX_CA" "$TX_CX"
+              read -r -e -i "$arg" arg </dev/tty 2>/dev/null || read -r arg </dev/tty
+              ;;
+            y|Y) ;;
+            *)   do_run=0 ;;
+          esac
+        fi
+        if (( do_run )); then
+          local alog="$TX_HOME/.agent.$$"
+          eval "$arg" 2>&1 | tee "$alog"
+          ec=${PIPESTATUS[0]}
+          cmd_out=$(tail -n 60 "$alog" 2>/dev/null || true)
+          rm -f "$alog"
+          obs="Exit code: ${ec}"$'\n'"Output:"$'\n'"${cmd_out:0:4000}"
+        else
+          obs="User skipped running command."
+        fi
+        ;;
+      *)
+        printf '%s\n' "$reply" | _tx_ai_render
+        return 0
+        ;;
+    esac
+    hist+=("user" "Observation:"$'\n'"${obs}")
+  done
+  _tx_warn "agent reached max steps (8)"
+}
+
+_tx_ai_diff() {
+  command -v git >/dev/null 2>&1 || { _tx_err "git not installed"; return 1; }
+  local target="${1:-}" df=""
+  if [[ -n $target ]]; then
+    df=$(git diff -- "$target" 2>/dev/null || true)
+    [[ -z $df ]] && df=$(git diff --cached -- "$target" 2>/dev/null || true)
+  else
+    df=$(git diff --cached 2>/dev/null || true)
+    [[ -z $df ]] && df=$(git diff 2>/dev/null || true)
+  fi
+  [[ -n $df ]] || { _tx_warn "no git diff found"; return 0; }
+  local reply _TX_AI_HINT_MODE="code"
+  reply=$(_tx_ai_call "" "user" "Review this git diff concisely (summary + any bugs or risks):"$'\n'"\`\`\`diff"$'\n'"${df:0:12000}"$'\n'"\`\`\`") || return 1
+  printf '%s\n' "$reply" | _tx_ai_render
+}
+
+_tx_ai_commit() {
+  command -v git >/dev/null 2>&1 || { _tx_err "git not installed"; return 1; }
+  local df
+  df=$(git diff --cached 2>/dev/null || true)
+  if [[ -z $df ]]; then
+    df=$(git diff 2>/dev/null || true)
+    [[ -n $df ]] || { _tx_warn "nothing to commit"; return 0; }
+    if [[ -t 0 && -t 1 ]]; then
+      printf '%sNo staged changes. Run git add -A? [y/N] %s' "$TX_CY" "$TX_CX"
+      local a=""
+      read -r -n 1 a </dev/tty 2>/dev/null || a="n"
+      echo
+      [[ "$a" == y || "$a" == Y ]] && git add -A && df=$(git diff --cached 2>/dev/null || true)
+    fi
+  fi
+  [[ -n $df ]] || return 1
+  local msg
+  msg=$(_tx_ai_call "Return ONLY a single concise conventional git commit message line (<=72 chars, no quotes, no markdown)." "user" "${df:0:10000}") || return 1
+  msg=$(printf '%s' "$msg" | head -n1 | tr -d '`')
+  printf '%s[commit msg]%s %s\n' "$TX_CA" "$TX_CX" "$msg"
+  if [[ -t 0 && -t 1 ]]; then
+    printf '%sAction: [y] Commit  [e] Edit  [n] Cancel : %s' "$TX_CY" "$TX_CX"
+    local ans=""
+    read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+    echo
+    if [[ "$ans" == e || "$ans" == E ]]; then
+      printf '%sEdit msg: %s' "$TX_CA" "$TX_CX"
+      read -r -e -i "$msg" msg </dev/tty 2>/dev/null || read -r msg </dev/tty
+      ans="y"
+    fi
+    if [[ "$ans" == y || "$ans" == Y ]]; then
+      git commit -m "$msg"
+    fi
+  fi
+}
+
+_tx_ai_project() {
+  local tree pkginfo="" f
+  tree=$(find . -maxdepth 2 -not -path '*/.*' 2>/dev/null | head -n 80)
+  for f in README.md package.json pyproject.toml requirements.txt Cargo.toml go.mod Makefile; do
+    [[ -f "$f" ]] && pkginfo+=$'\n'"--- ${f} ---"$'\n'"$(head -c 1500 "$f" 2>/dev/null)"
+  done
+  local reply _TX_AI_HINT_MODE="explain"
+  reply=$(_tx_ai_call "" "user" "Summarize this project concisely (stack, purpose, entrypoints, how to run):"$'\n'"Files:"$'\n'"${tree}"$'\n'"${pkginfo:0:6000}") || return 1
+  printf '%s\n' "$reply" | _tx_ai_render
+  if [[ -t 0 && -t 1 ]]; then
+    printf '\n%sSave project summary to project memory? [y/N] %s' "$TX_CY" "$TX_CX"
+    local ans=""
+    read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+    echo
+    if [[ "$ans" == y || "$ans" == Y ]]; then
+      local one_line
+      one_line=$(printf '%s' "$reply" | tr '\n' ' ' | sed 's/  */ /g' | head -c 350)
+      _tx_ai_mem_add --project "$one_line"
+    fi
+  fi
+}
+
+_tx_ai_err() {
+  local cmd="$*"
+  [[ -n $cmd ]] || { _tx_err "usage: /ai err <command>"; return 1; }
+  local logf="$TX_HOME/.aierr.$$" ec=0
+  eval "$cmd" 2>&1 | tee "$logf"
+  ec=${PIPESTATUS[0]}
+  if (( ec == 0 )); then
+    rm -f "$logf"
+    _tx_say "command succeeded (exit 0)"
+    return 0
+  fi
+  local tail_out
+  tail_out=$(tail -n 40 "$logf" 2>/dev/null || true)
+  rm -f "$logf"
+  _tx_ai_do "Diagnose and fix this failed command (${cmd}, exit ${ec}):"$'\n'"${tail_out}"
+}
+
 _tx_ai_explain() {
   local target="${*:-}"
   [[ -n $target ]] || { _tx_err "usage: /ai explain <file | command>"; return 1; }
@@ -3316,11 +3618,16 @@ tx_ai() {
 Usage: /ai [option | prompt]
   /ai                         First-time setup wizard, or interactive AI chat
   /ai <prompt>                One-shot question (also accepts piped stdin)
+  /ai make <file> <desc>      Create a new file/script (Save or Save & Run)
+  /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
+  /ai agent [-y] <goal>       Multi-step CLI agent (ls, read, write, run, verify)
   /ai -c <task>               Generate one shell command and prompt before running
   /ai do <task>               AI command runner (execute & auto-fix on error)
   /ai code <file> [question]  Analyze/review a code file for bugs & improvements
   /ai fix <file> [issue]      Analyze bugs & optionally apply fix (.bak saved)
   /ai explain <file|cmd>      Explain a code file or shell command
+  /ai diff | commit | project Git diff review, commit message gen, codebase scan
+  /ai err <command>           Run command and auto-diagnose/fix failures
   /ai route [...]             Multi-provider routes & auto-routing (also: airoute)
   /ai mood <mode>             Set mood: fast | coder | teacher | strict | friendly
   /ai mem [...]               AGY-style persistent memory store (also: aimem)
@@ -3432,6 +3739,41 @@ EOF
     explain)
       shift
       _tx_ai_explain "$@"
+      return $?
+      ;;
+    make|new|create|gen)
+      shift
+      _tx_ai_make "$@"
+      return $?
+      ;;
+    edit|patch|modify|update)
+      shift
+      _tx_ai_edit "$@"
+      return $?
+      ;;
+    agent|auto|task|build)
+      shift
+      _tx_ai_agent "$@"
+      return $?
+      ;;
+    diff)
+      shift
+      _tx_ai_diff "$@"
+      return $?
+      ;;
+    commit)
+      shift
+      _tx_ai_commit "$@"
+      return $?
+      ;;
+    project|scan)
+      shift
+      _tx_ai_project "$@"
+      return $?
+      ;;
+    err|debug)
+      shift
+      _tx_ai_err "$@"
       return $?
       ;;
   esac
@@ -3645,7 +3987,7 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="do run code check review fix explain route mood mem remember config setup status show test set reset -c cmd --help"
+        words="make edit agent do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -c cmd --help"
       elif [[ "$prev" == set ]]; then
         words="type base_url api_key model system temp max_tokens timeout"
       elif [[ "$prev" == type ]]; then
