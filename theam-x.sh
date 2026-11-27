@@ -2199,7 +2199,7 @@ _tx_ai_load() {
   TX_AI_MODEL=""
   TX_AI_SYSTEM="DEFAULT"
   TX_AI_TEMP="0.7"
-  TX_AI_MAX_TOKENS="4096"
+  TX_AI_MAX_TOKENS="8192"
   TX_AI_TIMEOUT="45"
   TX_AI_MOOD="fast"
   TX_AI_ROUTE=""
@@ -2210,6 +2210,9 @@ _tx_ai_load() {
   TX_AI_AUTO_SKILL="1"
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
+  if [[ -z "${TX_AI_MAX_TOKENS:-}" || "${TX_AI_MAX_TOKENS}" == "1024" ]]; then
+    TX_AI_MAX_TOKENS="8192"
+  fi
   case "$TX_AI_SYSTEM" in
     ""|"You are a concise, accurate Linux VPS and Termux terminal assistant."*|"You are a practical Linux VPS and Termux terminal assistant"*)
       TX_AI_SYSTEM="DEFAULT" ;;
@@ -2431,15 +2434,26 @@ if isinstance(data, dict) and "error" in data:
     sys.exit(1)
 
 txt = ""
+trunc = False
 try:
     if ptype == "openai":
-        txt = data["choices"][0]["message"]["content"]
+        ch = data["choices"][0]
+        msg = ch.get("message", {})
+        c = msg.get("content")
+        if isinstance(c, list):
+            txt = "".join(p.get("text", "") for p in c if isinstance(p, dict))
+        else:
+            txt = c or ""
+        trunc = ch.get("finish_reason") == "length"
     elif ptype == "gemini":
-        parts = data["candidates"][0]["content"]["parts"]
+        cand = data["candidates"][0]
+        parts = cand["content"]["parts"]
         txt = "".join(p.get("text", "") for p in parts)
+        trunc = cand.get("finishReason") == "MAX_TOKENS"
     elif ptype == "anthropic":
         parts = data["content"]
         txt = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        trunc = data.get("stop_reason") == "max_tokens"
     elif ptype == "ollama":
         txt = data.get("message", {}).get("content", "") or data.get("response", "")
 except Exception as e:
@@ -2449,6 +2463,8 @@ except Exception as e:
 if not txt:
     print("ERROR: empty reply from model")
     sys.exit(1)
+if trunc:
+    sys.stderr.write("[!] warning: AI reply hit max_tokens limit (increase via: /ai set max_tokens 16384)\n")
 sys.stdout.write(txt.rstrip("\n") + "\n")
 PY
     return $?
@@ -2576,7 +2592,7 @@ _tx_ai_extract_cmds() {
 }
 
 _tx_ai_extract_code_block() {
-  # Extracts the largest code block content (including indented ones)
+  # Extracts the largest code block content (including indented or unclosed blocks)
   awk '
     {
       t = $0
@@ -2591,7 +2607,10 @@ _tx_ai_extract_code_block() {
       next
     }
     in_blk { cur = cur $0 "\n" }
-    END { printf "%s", best }
+    END {
+      if (in_blk && length(cur) > length(best)) best = cur
+      printf "%s", best
+    }
   '
 }
 
@@ -3016,11 +3035,11 @@ _tx_ai_call() {
   local esys endpoint="" hdr_file="$tmp/curl.cfg" body_file="$tmp/body.json" resp_file="$tmp/resp.json"
   esys=$(printf '%s' "$sys" | _tx_json_escape)
   local temp_num="${TX_AI_TEMP:-0.7}"
-  local tok_num="${TX_AI_MAX_TOKENS:-4096}"
-  _tx_is_int "$tok_num" || tok_num=4096
-  # Prevent Gemini 2.5 thinking tokens from truncating short replies
-  if [[ "$TX_AI_TYPE" == "gemini" && "$tok_num" -lt 4096 ]]; then
-    tok_num=4096
+  local tok_num="${TX_AI_MAX_TOKENS:-8192}"
+  _tx_is_int "$tok_num" || tok_num=8192
+  # Prevent Gemini 2.5 thinking tokens or code generation from truncating
+  if [[ "$TX_AI_TYPE" == "gemini" || "${_TX_AI_HINT_MODE:-}" == "code" ]] && (( tok_num < 8192 )); then
+    tok_num=8192
   fi
 
   local i role emsg msg_json=""
@@ -3696,7 +3715,7 @@ _tx_ai_make() {
   else
     desc="$*"
   fi
-  local sys="You are an expert developer on ${TX_DEVICE}. Output line 1 as 'FILE: <filename>' (use ${target:-a suitable filename}) followed by the COMPLETE working code inside a single \`\`\` code block. No extra prose."
+  local sys="You are an expert developer on ${TX_DEVICE}. Output line 1 as 'FILE: <filename>' (use ${target:-a suitable concise filename}) followed by the COMPLETE working code inside a single \`\`\` code block with closing \`\`\`. Keep comments/docstrings minimal so the full code fits cleanly. No extra prose."
   local reply _TX_AI_HINT_MODE="code"
   reply=$(_tx_ai_call "$sys" "user" "Create file ${target:+(path: $target) }for: ${desc}") || return 1
   if [[ -z $target ]]; then
