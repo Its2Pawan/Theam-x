@@ -1289,17 +1289,18 @@ tx_help() {
   printf '\n%s=== THEAM-X v%s (%s | theme:%s | prompt:%s | rain:%s) ===%s\n\n' \
     "$TX_C2" "$(tx_local_ver)" "$TX_DEVICE" "$TX_THEME" "$TX_PROMPT" "$TX_RAIN" "$TX_CX"
   cat <<EOF
-${TX_CA}Small AI Assistant (/ai | airoute | aimem)${TX_CX}
-  /ai                         Setup wizard (first run) or interactive AI chat
-  /ai <prompt>                Ask AI directly (auto-routes by mood & recalls memory)
+${TX_CA}Small AI Assistant (/ai | airoute | aimem | aiskill)${TX_CX}
+  /ai                         Setup wizard (first run) or Claude-style AI chat
+  /ai [-y] <prompt>           Ask AI directly (-y: auto-approve; recalls memory+skills)
+  /ai auto <on|off|safe>      Persistent auto-approve (off / safe / on=YOLO)
   /ai make <file> <desc>      Create a new script/app file (Save / Save & Run)
   /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
-  /ai agent [-y] <goal>       Multi-step CLI AI agent (ls, read, write, run, verify)
+  /ai agent [-y] <goal>       Full AGY/Claude CLI agent (ls, find, grep, read, write, patch, run, plan)
   /ai do <task> | -c <task>   Run generated command(s) with error auto-fix
   /ai code <f> | fix <f>      Analyze/review code or fix bugs in file
-  /ai explain <file|cmd>      Explain a code file or shell command
   /ai diff | commit | project Git diff review, AI commit msg, codebase scan
   /ai err <command>           Run command and auto-diagnose/fix any error
+  aiskill [list|install|use]  Install/manage AGY SKILL.md packs (built-in / GitHub / URL)
   airoute [add|use|list|auto] Multi-provider routes & mood auto-routing
   aimem [add|list|search|del] Persistent AGY-style memory (/remember <fact>)
   /ai config | status | test  Configure base_url / api_key / model / type / etcs
@@ -1333,6 +1334,9 @@ ${TX_CA}System, VPS & Termux${TX_CX}
   sysup [-y]                  Update OS packages (apt/dnf/yum/apk/pacman/pkg)
   txclean [--all]             Clean package & temp caches (--all: ~/.cache/journal)
   txdiag                      Full VPS + Termux environment & health check
+  txenv                       Installed runtimes (py/node/go/docker) & Theam-X state
+  txbench                     Quick CPU, disk write/read & network speed benchmark
+  txcron [list|add|rm]        View/manage scheduled cron jobs
   txbattery                   Battery percentage, status & temp
   txstorage                   Termux shared storage setup / VPS mounts
   txwake [on|off]             Termux CPU wake-lock toggle
@@ -1830,12 +1834,109 @@ tx_diag() {
   else
     printf '  %b /ai not configured yet (run: /ai config)\n' "$wn"
   fi
-  local rcnt=0 mcnt=0
+  local rcnt=0 mcnt=0 scnt=0
   if [[ -d "$TX_HOME/routes" ]]; then
     rcnt=$(ls -1 "$TX_HOME/routes"/*.conf 2>/dev/null | wc -l | tr -d ' ')
   fi
   [[ -f "$TX_HOME/memory/global.md" ]] && mcnt=$(grep -c '^- ' "$TX_HOME/memory/global.md" 2>/dev/null || echo 0)
-  printf '  %b /ai routes: %s saved | memory: %s global item(s)\n' "$ok" "${rcnt:-0}" "${mcnt:-0}"
+  if [[ -d "$TX_HOME/skills" ]]; then
+    scnt=$(ls -1d "$TX_HOME/skills"/*/SKILL.md 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  printf '  %b /ai routes: %s | memory: %s | skills: %s | auto: %s\n' \
+    "$ok" "${rcnt:-0}" "${mcnt:-0}" "${scnt:-0}" "${TX_AI_AUTO:-off}"
+  echo
+}
+
+tx_env() {
+  printf '\n%s=== ENVIRONMENT & RUNTIMES ===%s\n' "$TX_C2" "$TX_CX"
+  printf '%sDevice  :%s %s (%s)\n' "$TX_CA" "$TX_CX" "$TX_DEVICE" "$(uname -m 2>/dev/null || echo unknown)"
+  printf '%sShell   :%s bash %s\n' "$TX_CA" "$TX_CX" "$BASH_VERSION"
+  printf '%sTheme   :%s %s / %s / %s\n' "$TX_CA" "$TX_CX" "$TX_THEME" "$TX_PROMPT" "$TX_RAIN"
+  printf '%sAI      :%s type=%s model=%s auto=%s mood=%s skill=%s\n' \
+    "$TX_CA" "$TX_CX" "${TX_AI_TYPE:-unset}" "${TX_AI_MODEL:-unset}" "${TX_AI_AUTO:-off}" "${TX_AI_MOOD:-fast}" "${TX_AI_SKILL:-auto}"
+  echo
+  printf '%sRuntimes:%s\n' "$TX_CA" "$TX_CX"
+  local rt ver
+  for rt in python3 python node npm go rustc docker git php java cloudflared; do
+    if command -v "$rt" >/dev/null 2>&1; then
+      ver=$("$rt" --version 2>&1 | head -n1 | tr -d '\r')
+      printf '  %s[OK]%s   %-12s %s\n' "$TX_C2" "$TX_CX" "$rt" "${ver:0:55}"
+    fi
+  done
+  echo
+}
+
+tx_cron() {
+  local sub="${1:-list}"
+  case "$sub" in
+    -h|--help|help)
+      echo "Usage: txcron [list | add '<spec> <cmd>' | rm <pattern>]"
+      return 0
+      ;;
+    list|"")
+      printf '%s=== CRON JOBS ===%s\n' "$TX_C2" "$TX_CX"
+      if command -v crontab >/dev/null 2>&1; then
+        crontab -l 2>/dev/null || echo "  (no user crontab)"
+      else
+        _tx_warn "crontab not installed (Termux: pkg install cronie)"
+      fi
+      if [[ -d /etc/cron.d ]]; then
+        printf '\n%s/etc/cron.d:%s\n' "$TX_CA" "$TX_CX"
+        ls -1 /etc/cron.d 2>/dev/null || true
+      fi
+      ;;
+    add)
+      shift
+      local line="$*"
+      [[ -n $line ]] || { _tx_err "usage: txcron add '*/5 * * * * /path/to/cmd'"; return 1; }
+      command -v crontab >/dev/null 2>&1 || { _tx_err "crontab not installed"; return 1; }
+      ( crontab -l 2>/dev/null || true; printf '%s\n' "$line" ) | crontab - && _tx_say "added cron job"
+      ;;
+    rm|del)
+      shift
+      local pat="$*"
+      [[ -n $pat ]] || { _tx_err "usage: txcron rm <pattern>"; return 1; }
+      command -v crontab >/dev/null 2>&1 || { _tx_err "crontab not installed"; return 1; }
+      local cur
+      cur=$(crontab -l 2>/dev/null || true)
+      printf '%s\n' "$cur" | grep -vF -- "$pat" | crontab - && _tx_say "removed cron entries matching '${pat}'"
+      ;;
+    *)
+      _tx_err "usage: txcron [list|add <line>|rm <pattern>]"
+      return 1
+      ;;
+  esac
+}
+
+tx_bench() {
+  printf '\n%s=== QUICK SYSTEM BENCHMARK ===%s\n' "$TX_C2" "$TX_CX"
+  local t0 t1 ms
+  # 1. CPU hash test
+  if command -v sha256sum >/dev/null 2>&1 && [[ -r /dev/zero ]]; then
+    t0=$(date +%s%3N 2>/dev/null || printf '%s000' "$SECONDS")
+    dd if=/dev/zero bs=1M count=64 2>/dev/null | sha256sum >/dev/null 2>&1 || true
+    t1=$(date +%s%3N 2>/dev/null || printf '%s000' "$SECONDS")
+    ms=$(( t1 - t0 )); (( ms < 1 )) && ms=1
+    printf '%sCPU (64MB SHA256) :%s %d ms (%d MB/s)\n' "$TX_CA" "$TX_CX" "$ms" $(( 64000 / ms ))
+  fi
+  # 2. Disk write/read test (16MB in TX_HOME)
+  local bf="$TX_HOME/.bench.$$"
+  t0=$(date +%s%3N 2>/dev/null || printf '%s000' "$SECONDS")
+  if dd if=/dev/zero of="$bf" bs=1M count=16 conv=fsync 2>/dev/null || dd if=/dev/zero of="$bf" bs=1M count=16 2>/dev/null; then
+    t1=$(date +%s%3N 2>/dev/null || printf '%s000' "$SECONDS")
+    ms=$(( t1 - t0 )); (( ms < 1 )) && ms=1
+    printf '%sDisk Write (16MB) :%s %d ms (%d MB/s)\n' "$TX_CA" "$TX_CX" "$ms" $(( 16000 / ms ))
+    rm -f "$bf"
+  else
+    rm -f "$bf" 2>/dev/null || true
+    _tx_warn "disk benchmark skipped"
+  fi
+  # 3. Network latency
+  if command -v curl >/dev/null 2>&1; then
+    local lat
+    lat=$(curl -o /dev/null -s -w '%{time_total}' --max-time 4 "https://1.1.1.1" 2>/dev/null || echo "")
+    [[ -n $lat ]] && printf '%sNet HTTP (1.1.1.1):%s %ss\n' "$TX_CA" "$TX_CX" "$lat"
+  fi
   echo
 }
 
@@ -2103,6 +2204,9 @@ _tx_ai_load() {
   TX_AI_ROUTE=""
   TX_AI_AUTOROUTE="1"
   TX_AI_AUTO_MEM="1"
+  TX_AI_AUTO="off"
+  TX_AI_SKILL=""
+  TX_AI_AUTO_SKILL="1"
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
   case "$TX_AI_SYSTEM" in
@@ -2114,7 +2218,7 @@ _tx_ai_load() {
 _tx_ai_save() {
   mkdir -p "$TX_HOME" || return 1
   local tmp="$TX_HOME/.aicfg.$$"
-  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am
+  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am q_auto q_sk q_as
   printf -v q_type  '%q' "$TX_AI_TYPE"
   printf -v q_url   '%q' "${TX_AI_BASE_URL%/}"
   printf -v q_key   '%q' "$TX_AI_API_KEY"
@@ -2127,6 +2231,9 @@ _tx_ai_save() {
   printf -v q_rt    '%q' "${TX_AI_ROUTE:-}"
   printf -v q_ar    '%q' "${TX_AI_AUTOROUTE:-1}"
   printf -v q_am    '%q' "${TX_AI_AUTO_MEM:-1}"
+  printf -v q_auto  '%q' "${TX_AI_AUTO:-off}"
+  printf -v q_sk    '%q' "${TX_AI_SKILL:-}"
+  printf -v q_as    '%q' "${TX_AI_AUTO_SKILL:-1}"
   (
     umask 077
     {
@@ -2143,6 +2250,9 @@ _tx_ai_save() {
       echo "TX_AI_ROUTE=$q_rt"
       echo "TX_AI_AUTOROUTE=$q_ar"
       echo "TX_AI_AUTO_MEM=$q_am"
+      echo "TX_AI_AUTO=$q_auto"
+      echo "TX_AI_SKILL=$q_sk"
+      echo "TX_AI_AUTO_SKILL=$q_as"
     } > "$tmp"
   ) && chmod 600 "$tmp" && mv -f "$tmp" "$TX_HOME/ai.conf" && chmod 600 "$TX_HOME/ai.conf"
 }
@@ -2174,10 +2284,14 @@ _tx_ai_status() {
   printf '%sBase URL   :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_BASE_URL:-unset}"
   printf '%sAPI Key    :%s %s\n' "$TX_CA" "$TX_CX" "$(_tx_ai_mask_key "${TX_AI_API_KEY:-}")"
   printf '%sModel      :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MODEL:-unset}"
-  printf '%sRoute/Mood :%s %s | mood:%s | auto-route:%s | auto-mem:%s\n' \
+  printf '%sRoute/Mood :%s %s | mood:%s | auto-approve:%s | skill:%s\n' \
     "$TX_CA" "$TX_CX" "${TX_AI_ROUTE:-default}" "${TX_AI_MOOD:-fast}" \
+    "${TX_AI_AUTO:-off}" "${TX_AI_SKILL:-auto}"
+  printf '%sToggles    :%s auto-route:%s | auto-mem:%s | auto-skill:%s\n' \
+    "$TX_CA" "$TX_CX" \
     "$([[ ${TX_AI_AUTOROUTE:-1} == 1 ]] && echo on || echo off)" \
-    "$([[ ${TX_AI_AUTO_MEM:-1} == 1 ]] && echo on || echo off)"
+    "$([[ ${TX_AI_AUTO_MEM:-1} == 1 ]] && echo on || echo off)" \
+    "$([[ ${TX_AI_AUTO_SKILL:-1} == 1 ]] && echo on || echo off)"
   printf '%sTemp       :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_TEMP:-0.7}"
   printf '%sMax Tokens :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MAX_TOKENS:-4096}"
   printf '%sTimeout    :%s %ss\n' "$TX_CA" "$TX_CX" "${TX_AI_TIMEOUT:-45}"
@@ -2889,9 +3003,11 @@ _tx_ai_call() {
     fi
     sys+=$'\n'"$(_tx_ai_mood_instruction "$_eff_mood")"
   fi
-  local mem_ctx=""
+  local mem_ctx="" skill_ctx=""
   mem_ctx=$(_tx_ai_mem_context "$last_msg")
   [[ -n $mem_ctx ]] && sys+=$'\n\n'"[Persistent Memory - use silently when relevant]:"$'\n'"${mem_ctx}"
+  skill_ctx=$(_tx_ai_skill_context "$last_msg")
+  [[ -n $skill_ctx ]] && sys+=$'\n\n'"[Active Skill Instructions]:"$'\n'"${skill_ctx}"
   local tmp="$TX_HOME/.aitmp.$$"
   ( umask 077 && mkdir -p "$tmp" ) || { _tx_err "cannot create temp dir"; return 1; }
   trap 'rm -rf "$tmp"' RETURN
@@ -3016,6 +3132,348 @@ _tx_ai_call() {
   printf '%s\n' "$parsed"
 }
 
+# =====================================================================
+#  AUTO-APPROVE & SKILLS SYSTEM (AGY SKILL.md compatible)
+# =====================================================================
+_tx_ai_is_dangerous() {
+  local cmd="$1"
+  [[ "$cmd" =~ (^|[[:space:]\;\|&])(rm[[:space:]]+-rf|rm[[:space:]]+-fr|mkfs|dd[[:space:]]+if=|shutdown|reboot|poweroff|halt|chmod[[:space:]]+-R[[:space:]]+777|:\(\)\{) ]] && return 0
+  [[ "$cmd" == *"> /dev/sd"* || "$cmd" == *"> /dev/nvme"* || "$cmd" == *"> /dev/mmc"* ]] && return 0
+  return 1
+}
+
+_tx_ai_should_auto() {
+  # args: kind (write|cmd), detail
+  local kind="$1" detail="${2:-}"
+  local mode="${_TX_AI_FORCE_AUTO:-${TX_AI_AUTO:-off}}"
+  case "$mode" in
+    on|1|true|yolo) return 0 ;;
+    safe)
+      if [[ "$kind" == "write" ]]; then return 0; fi
+      if ! _tx_ai_is_dangerous "$detail"; then return 0; fi
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+tx_ai_auto() {
+  _tx_ai_load
+  local m="${1:-}"
+  if [[ -z $m || $m == status || $m == show ]]; then
+    printf '%sAuto-approve:%s %s  %s(off | safe | on)%s\n' "$TX_CA" "$TX_CX" "${TX_AI_AUTO:-off}" "$TX_CD" "$TX_CX"
+    return 0
+  fi
+  case "$m" in
+    on|1|yolo|true)  TX_AI_AUTO="on" ;;
+    safe)            TX_AI_AUTO="safe" ;;
+    off|0|false)     TX_AI_AUTO="off" ;;
+    *) _tx_err "usage: /ai auto <off|safe|on>"; return 1 ;;
+  esac
+  _tx_ai_save && _tx_say "AI auto-approve -> ${TX_AI_AUTO}"
+}
+
+TX_AI_BUILTIN_SKILLS=(vps-admin termux-pro python-dev bash-ninja web-dev docker-ops security-audit)
+
+_tx_ai_skill_dir() { printf '%s/skills' "$TX_HOME"; }
+
+_tx_ai_skill_builtin() {
+  case "$1" in
+    vps-admin)
+      cat <<'SK'
+---
+name: vps-admin
+description: Linux VPS administration, systemd, nginx/caddy, firewall, ports, SSL, and troubleshooting.
+---
+# VPS Admin Skill
+- Prefer non-destructive checks (`systemctl status`, `ss -tulnp`, `journalctl -n 50 --no-pager`) before restarting services.
+- Always validate configs before reload (`nginx -t`, `sshd -t`).
+- Keep SSH port open before enabling `ufw enable`.
+SK
+      ;;
+    termux-pro)
+      cat <<'SK'
+---
+name: termux-pro
+description: Android Termux expert for pkg, proot-distro, termux-api, cloudflared, sshd, storage, and wake-lock.
+---
+# Termux Pro Skill
+- Use `pkg install` (never `sudo` or `apt-get` with root paths).
+- Remember `/proc/stat` and `ss -p` may be restricted on Android 10+; handle gracefully.
+- Use `$PREFIX` paths and `termux-wake-lock` for long-running servers.
+SK
+      ;;
+    python-dev)
+      cat <<'SK'
+---
+name: python-dev
+description: Clean Python 3 development, CLI scripts, FastAPI/Flask, pytest, type hints, and error handling.
+---
+# Python Dev Skill
+- Prefer Python 3 standard library when possible so scripts run cleanly on VPS & Termux without heavy installs.
+- Always handle exceptions, validate inputs, and add clear `if __name__ == "__main__":` entrypoints.
+SK
+      ;;
+    bash-ninja)
+      cat <<'SK'
+---
+name: bash-ninja
+description: Robust Bash 4+ scripting, safe quoting, set -euo pipefail, traps, and zero-dependency CLI tools.
+---
+# Bash Ninja Skill
+- Quote all variable expansions (`"$var"`), use `[[ ... ]]`, and clean `trap` handlers for temp files.
+- Ensure compatibility with both GNU coreutils and BusyBox/Termux tools.
+SK
+      ;;
+    web-dev)
+      cat <<'SK'
+---
+name: web-dev
+description: Modern responsive HTML/CSS/JS, Node.js, Tailwind, REST APIs, and clean UI design.
+---
+# Web Dev Skill
+- Build clean, responsive, accessible UIs with semantic HTML and modern CSS variables/grid/flex.
+- Avoid unnecessary build bloat for small utilities when vanilla or lightweight setups work better.
+SK
+      ;;
+    docker-ops)
+      cat <<'SK'
+---
+name: docker-ops
+description: Dockerfiles, docker compose, multi-stage builds, container networking, logs, and debugging.
+---
+# Docker Ops Skill
+- Use slim/alpine base images, non-root users where practical, and `.dockerignore`.
+- Check `docker ps`, `docker logs --tail 50`, and `docker compose config` when debugging.
+SK
+      ;;
+    security-audit)
+      cat <<'SK'
+---
+name: security-audit
+description: Security review for bash/Python/JS code, SSH hardening, open ports, file permissions, and secrets.
+---
+# Security Audit Skill
+- Check for command injection, hardcoded secrets/tokens, weak file permissions (recommend 600/700), and unvalidated inputs.
+- Report concrete findings with line numbers and exact remediations.
+SK
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_tx_ai_skill_context() {
+  local query="${1:-}" sdir f sname body="" total=0
+  sdir="$(_tx_ai_skill_dir)"
+  [[ -d "$sdir" ]] || return 0
+  if [[ -n ${TX_AI_SKILL:-} && -f "$sdir/${TX_AI_SKILL}/SKILL.md" ]]; then
+    body+=$'\n'"--- Skill: ${TX_AI_SKILL} ---"$'\n'"$(head -c 1400 "$sdir/${TX_AI_SKILL}/SKILL.md")"
+  fi
+  if [[ "${TX_AI_AUTO_SKILL:-1}" == 1 && -n $query ]]; then
+    local qlow="${query,,}" desc
+    for f in "$sdir"/*/SKILL.md; do
+      [[ -f "$f" ]] || continue
+      sname="${f%/*}"; sname="${sname##*/}"
+      [[ "$sname" == "${TX_AI_SKILL:-}" ]] && continue
+      desc=$(awk '/^description:/{sub(/^description:[[:space:]]*/,""); print; exit}' "$f" 2>/dev/null || true)
+      local match=0
+      if [[ "$qlow" == *"${sname,,}"* || "$qlow" == *"${sname%%-*}"* ]]; then
+        match=1
+      elif [[ "$sname" == "termux-pro" && "$TX_DEVICE" == "termux" && "$qlow" =~ (termux|pkg|android|cloudflare|proot) ]]; then
+        match=1
+      elif [[ "$sname" == "vps-admin" && "$qlow" =~ (nginx|systemd|ufw|firewall|ssl|certbot|vps|service|port) ]]; then
+        match=1
+      elif [[ "$sname" == "python-dev" && "$qlow" =~ (python|py|fastapi|flask|pip|pytest) ]]; then
+        match=1
+      elif [[ "$sname" == "docker-ops" && "$qlow" =~ (docker|container|compose|dockerfile) ]]; then
+        match=1
+      elif [[ "$sname" == "security-audit" && "$qlow" =~ (security|audit|vuln|ssh|hardening|exploit) ]]; then
+        match=1
+      fi
+      if (( match )); then
+        body+=$'\n'"--- Skill: ${sname} ---"$'\n'"$(head -c 900 "$f")"
+        total=$(( total + 1 ))
+        (( total >= 2 )) && break
+      fi
+    done
+  fi
+  [[ -n $body ]] && printf '%s' "${body:0:2500}"
+}
+
+tx_ai_skill() {
+  _tx_ai_load
+  local sub="${1:-list}" sdir
+  sdir="$(_tx_ai_skill_dir)"
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: aiskill | /ai skill [subcommand]
+  aiskill                           List installed & available built-in skills
+  aiskill install <name|url|repo|dir> Install built-in skill, GitHub repo, URL, or local dir
+  aiskill install all               Install all built-in VPS + Termux + Dev skills
+  aiskill create <name> [desc]      Create a new custom SKILL.md (AI-assisted or template)
+  aiskill show <name>               Print a skill's SKILL.md
+  aiskill use <name> | off          Pin a skill active (or off for auto-matching)
+  aiskill remove <name>             Uninstall a skill
+  aiskill auto <on|off>             Toggle automatic skill matching
+EOF
+      return 0
+      ;;
+    list|"")
+      printf '\n%s=== SKILLS SYSTEM (AGY SKILL.md) ===%s\n' "$TX_C2" "$TX_CX"
+      printf '%sPinned Skill :%s %s | Auto-Match: %s\n' \
+        "$TX_CA" "$TX_CX" "${TX_AI_SKILL:-none}" "$([[ ${TX_AI_AUTO_SKILL:-1} == 1 ]] && echo on || echo off)"
+      printf '\n%sInstalled (%s):%s\n' "$TX_CA" "$sdir" "$TX_CX"
+      if ls "$sdir"/*/SKILL.md >/dev/null 2>&1; then
+        local f sn desc mark
+        for f in "$sdir"/*/SKILL.md; do
+          sn="${f%/*}"; sn="${sn##*/}"
+          mark=" "; [[ "$sn" == "${TX_AI_SKILL:-}" ]] && mark="*"
+          desc=$(awk '/^description:/{sub(/^description:[[:space:]]*/,""); print; exit}' "$f" 2>/dev/null || true)
+          printf '  %s[%s]%s %-16s %s\n' "$TX_C2" "$mark" "$TX_CX" "$sn" "${desc:0:60}"
+        done
+      else
+        echo "  (none — install built-in packs: aiskill install all)"
+      fi
+      printf '\n%sBuilt-in Available:%s %s\n\n' "$TX_CA" "$TX_CX" "${TX_AI_BUILTIN_SKILLS[*]}"
+      ;;
+    install|add)
+      local src="${2:-}" name="${3:-}"
+      [[ -n $src ]] || { _tx_err "usage: aiskill install <name|all|url|owner/repo|local_dir>"; return 1; }
+      mkdir -p "$sdir" || return 1
+      if [[ "$src" == "all" ]]; then
+        local b
+        for b in "${TX_AI_BUILTIN_SKILLS[@]}"; do
+          mkdir -p "$sdir/$b" && _tx_ai_skill_builtin "$b" > "$sdir/$b/SKILL.md"
+        done
+        _tx_say "installed all ${#TX_AI_BUILTIN_SKILLS[@]} built-in skills into $sdir"
+        return 0
+      fi
+      if _tx_in_list "$src" "${TX_AI_BUILTIN_SKILLS[@]}"; then
+        mkdir -p "$sdir/$src" && _tx_ai_skill_builtin "$src" > "$sdir/$src/SKILL.md"
+        _tx_say "installed built-in skill '${src}'"
+        return 0
+      fi
+      if [[ -d "$src" && -f "$src/SKILL.md" ]]; then
+        [[ -z $name ]] && name="$(basename "$(cd "$src" && pwd)")"
+        name="${name//[^A-Za-z0-9_.-]/_}"
+        mkdir -p "$sdir/$name" && cp -f "$src/SKILL.md" "$sdir/$name/SKILL.md"
+        _tx_say "installed local skill '${name}'"
+        return 0
+      fi
+      if [[ -f "$src" ]]; then
+        [[ -z $name ]] && { name="$(basename "$src" .md)"; [[ "$name" == "SKILL" ]] && name="$(basename "$(dirname "$src")")"; }
+        name="${name//[^A-Za-z0-9_.-]/_}"
+        mkdir -p "$sdir/$name" && cp -f "$src" "$sdir/$name/SKILL.md"
+        _tx_say "installed skill '${name}' from ${src}"
+        return 0
+      fi
+      # URL or owner/repo[/subpath]
+      local url=""
+      if [[ "$src" == https://* || "$src" == http://* ]]; then
+        url="$src"
+        [[ -z $name ]] && { name=$(printf '%s' "$url" | awk -F/ '{if($NF=="SKILL.md") print $(NF-1); else print $NF}'); name="${name%.md}"; }
+      elif [[ "$src" == */* ]]; then
+        local owner_repo subpath=""
+        owner_repo=$(printf '%s' "$src" | cut -d/ -f1-2)
+        subpath=$(printf '%s' "$src" | cut -d/ -f3-)
+        [[ -z $name ]] && name="${subpath##*/}"
+        [[ -z $name || "$name" == "SKILL.md" ]] && name="${owner_repo##*/}"
+        local b try_url="" tmpf="$TX_HOME/.skill.$$"
+        for b in main master; do
+          if [[ -n $subpath ]]; then
+            [[ "$subpath" == *SKILL.md ]] && try_url="${TX_RAW_BASE}/${owner_repo}/${b}/${subpath}" || try_url="${TX_RAW_BASE}/${owner_repo}/${b}/${subpath}/SKILL.md"
+          else
+            try_url="${TX_RAW_BASE}/${owner_repo}/${b}/SKILL.md"
+          fi
+          if tx_get "$try_url" > "$tmpf" 2>/dev/null && [[ -s "$tmpf" ]]; then
+            name="${name//[^A-Za-z0-9_.-]/_}"
+            mkdir -p "$sdir/$name" && mv -f "$tmpf" "$sdir/$name/SKILL.md"
+            _tx_say "installed skill '${name}' from ${try_url}"
+            return 0
+          fi
+        done
+        rm -f "$tmpf"
+        _tx_err "could not fetch SKILL.md from GitHub '${src}'"
+        return 1
+      else
+        _tx_err "unknown skill '${src}'. Built-in: ${TX_AI_BUILTIN_SKILLS[*]}"
+        return 1
+      fi
+      local tmpf="$TX_HOME/.skill.$$"
+      if tx_get "$url" > "$tmpf" 2>/dev/null && [[ -s "$tmpf" ]]; then
+        name="${name//[^A-Za-z0-9_.-]/_}"
+        [[ -z $name ]] && name="custom-skill"
+        mkdir -p "$sdir/$name" && mv -f "$tmpf" "$sdir/$name/SKILL.md"
+        _tx_say "installed skill '${name}'"
+        return 0
+      fi
+      rm -f "$tmpf"
+      _tx_err "failed to download skill from ${url}"
+      return 1
+      ;;
+    create|new)
+      local sname="${2:-}"
+      [[ -n $sname ]] || { _tx_err "usage: aiskill create <name> [description]"; return 1; }
+      sname="${sname//[^A-Za-z0-9_.-]/_}"
+      shift 2
+      local sdesc="${*:-Custom skill for ${sname}}"
+      mkdir -p "$sdir/$sname" || return 1
+      if _tx_ai_is_configured; then
+        local gen
+        gen=$(_tx_ai_call "Create a concise AGY SKILL.md file with YAML frontmatter (name, description) and practical bullet instructions. Return only markdown." "user" "Skill name: ${sname}, Purpose: ${sdesc}") || gen=""
+        if [[ -n $gen ]]; then
+          printf '%s\n' "$gen" > "$sdir/$sname/SKILL.md"
+          _tx_say "created AI-generated skill '${sname}' -> $sdir/$sname/SKILL.md"
+          return 0
+        fi
+      fi
+      cat > "$sdir/$sname/SKILL.md" <<EOF
+---
+name: ${sname}
+description: ${sdesc}
+---
+# ${sname}
+- Follow best practices for ${sdesc}.
+EOF
+      _tx_say "created skill '${sname}' -> $sdir/$sname/SKILL.md"
+      ;;
+    show|view)
+      local sname="${2:-}"
+      [[ -n $sname && -f "$sdir/$sname/SKILL.md" ]] || { _tx_err "skill not found: $sname"; return 1; }
+      cat "$sdir/$sname/SKILL.md"
+      ;;
+    use)
+      local sname="${2:-}"
+      [[ -n $sname && -f "$sdir/$sname/SKILL.md" ]] || { _tx_err "skill not installed: $sname"; return 1; }
+      TX_AI_SKILL="$sname"
+      _tx_ai_save && _tx_say "pinned skill -> ${sname}"
+      ;;
+    off|none)
+      TX_AI_SKILL=""
+      _tx_ai_save && _tx_say "unpinned active skill (auto-matching remains $([[ ${TX_AI_AUTO_SKILL:-1} == 1 ]] && echo on || echo off))"
+      ;;
+    remove|rm|del)
+      local sname="${2:-}"
+      [[ -n $sname && -d "$sdir/$sname" ]] || { _tx_err "skill not installed: $sname"; return 1; }
+      rm -rf "$sdir/$sname"
+      [[ "${TX_AI_SKILL:-}" == "$sname" ]] && { TX_AI_SKILL=""; _tx_ai_save; }
+      _tx_say "removed skill '${sname}'"
+      ;;
+    auto)
+      case "${2:-}" in
+        on|1)  TX_AI_AUTO_SKILL=1; _tx_ai_save; _tx_say "auto-skill -> ON" ;;
+        off|0) TX_AI_AUTO_SKILL=0; _tx_ai_save; _tx_say "auto-skill -> OFF" ;;
+        *) _tx_err "usage: aiskill auto <on|off>"; return 1 ;;
+      esac
+      ;;
+    *)
+      _tx_err "unknown subcommand '$sub'. Run: aiskill --help"
+      return 1
+      ;;
+  esac
+}
+
 _tx_ai_test() {
   _tx_ai_load
   _tx_ai_is_configured || { _tx_err "AI not configured. Run: /ai config"; return 1; }
@@ -3035,13 +3493,18 @@ _tx_ai_cmd_helper() {
   cmd="${cmd%\`\`\`}"
   cmd=$(printf '%s' "$cmd" | sed '/^[[:space:]]*$/d' | head -n1)
   printf '%s[command]%s %s\n' "$TX_CA" "$TX_CX" "$cmd"
+  if _tx_ai_should_auto cmd "$cmd"; then
+    _tx_say "[auto] executing"
+    _tx_ai_exec_with_autofix "$cmd"
+    return $?
+  fi
   if [[ -t 0 && -t 1 ]]; then
     printf '%sRun this command? [y/N] %s' "$TX_CY" "$TX_CX"
     local ans=""
     read -r -n 1 ans </dev/tty 2>/dev/null || ans=""
     echo
     if [[ "$ans" == y || "$ans" == Y ]]; then
-      eval "$cmd"
+      _tx_ai_exec_with_autofix "$cmd"
     fi
   fi
 }
@@ -3076,6 +3539,11 @@ _tx_ai_run_interactive_cmd() {
   local cmd="$1"
   [[ -n $cmd ]] || return 1
   printf '%s[command]%s %s\n' "$TX_CA" "$TX_CX" "$cmd"
+  if _tx_ai_should_auto cmd "$cmd"; then
+    _tx_say "[auto] executing"
+    _tx_ai_exec_with_autofix "$cmd"
+    return $?
+  fi
   [[ -t 0 && -t 1 ]] || return 0
   printf '%sAction: [y] Run  [e] Edit  [n] Skip : %s' "$TX_CY" "$TX_CX"
   local ans=""
@@ -3166,14 +3634,11 @@ _tx_ai_fix() {
 
   local fixed
   fixed=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
-  if [[ -n $fixed && -t 0 && -t 1 ]]; then
-    printf '\n%sSave fix to %s (creates %s.bak)? [y/N] %s' "$TX_CY" "$f" "$f" "$TX_CX"
-    local ans=""
-    read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
-    echo
-    if [[ "$ans" == y || "$ans" == Y ]]; then
-      cp -p -- "$f" "${f}.bak" && printf '%s' "$fixed" > "$f"
-      _tx_say "updated ${f} (backup saved: ${f}.bak)"
+  if [[ -n $fixed ]]; then
+    if _tx_ai_should_auto write "$f"; then
+      _tx_ai_write_file "$f" "$fixed" 1
+    elif [[ -t 0 && -t 1 ]]; then
+      _tx_ai_write_file "$f" "$fixed" 0
     fi
   fi
 }
@@ -3190,7 +3655,7 @@ _tx_ai_write_file() {
   else
     printf '%s[new file]%s %s (%d lines)\n' "$TX_CA" "$TX_CX" "$path" "$(printf '%s' "$content" | wc -l | tr -d ' ')"
   fi
-  if (( ! auto_yes )) && [[ -t 0 && -t 1 ]]; then
+  if (( ! auto_yes )) && ! _tx_ai_should_auto write "$path" && [[ -t 0 && -t 1 ]]; then
     printf '%sWrite %s? [y/N] %s' "$TX_CY" "$path" "$TX_CX"
     local ans=""
     read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
@@ -3243,6 +3708,10 @@ _tx_ai_make() {
 
   printf '\n%s=== GENERATED: %s ===%s\n' "$TX_C2" "$target" "$TX_CX"
   printf '%s\n' "$code" | awk '{printf "%3d | %s\n", NR, $0}'
+  if _tx_ai_should_auto write "$target"; then
+    _tx_ai_write_file "$target" "$code" 1
+    return $?
+  fi
   if [[ -t 0 && -t 1 ]]; then
     printf '\n%sAction: [s] Save  [r] Save & Run  [n] Cancel : %s' "$TX_CY" "$TX_CX"
     local act=""
@@ -3274,33 +3743,92 @@ _tx_ai_edit() {
   _tx_ai_write_file "$f" "$updated" 0
 }
 
+_tx_ai_agent_patch() {
+  local path="$1" block="$2" auto_yes="${3:-0}"
+  [[ -f "$path" ]] || { echo "ERROR: file not found: $path"; return 1; }
+  local tmp_old="$TX_HOME/.pold.$$" tmp_new="$TX_HOME/.pnew.$$"
+  awk '
+    /^<<<OLD$/ { mode=1; next }
+    /^===$/    { mode=2; next }
+    /^>>>$/    { mode=0; next }
+    mode==1 { print > "'"$tmp_old"'" }
+    mode==2 { print > "'"$tmp_new"'" }
+  ' <<< "$block"
+  if [[ ! -s "$tmp_old" ]]; then
+    rm -f "$tmp_old" "$tmp_new"
+    _tx_ai_write_file "$path" "$block" "$auto_yes"
+    return $?
+  fi
+  local patched=""
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 - "$path" "$tmp_old" "$tmp_new" <<'PY'
+import sys
+p, fo, fn = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(p, encoding="utf-8", errors="replace").read()
+old = open(fo, encoding="utf-8", errors="replace").read().rstrip("\n")
+new = open(fn, encoding="utf-8", errors="replace").read().rstrip("\n")
+if old not in src:
+    sys.exit(2)
+open(p + ".bak", "w", encoding="utf-8").write(src)
+open(p, "w", encoding="utf-8").write(src.replace(old, new, 1))
+PY
+    then
+      rm -f "$tmp_old" "$tmp_new"
+      return 1
+    fi
+    rm -f "$tmp_old" "$tmp_new"
+    _tx_say "patched ${path} (backup: ${path}.bak)"
+    return 0
+  fi
+  rm -f "$tmp_old" "$tmp_new"
+  return 1
+}
+
 _tx_ai_agent() {
   local auto=0
-  if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
+  if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" || "${1:-}" == "--yolo" ]]; then
     auto=1; shift
+  elif [[ "${_TX_AI_FORCE_AUTO:-${TX_AI_AUTO:-off}}" == "on" ]]; then
+    auto=1
   fi
   local goal="$*"
   [[ -n $goal ]] || { _tx_err "usage: /ai agent [-y] <goal>"; return 1; }
 
-  local sys="You are an autonomous CLI coding & system agent on ${TX_DEVICE} (${OSNAME:-Linux}), cwd=${PWD}.
+  local plan_dir="$TX_HOME/memory/plans"
+  mkdir -p "$plan_dir" 2>/dev/null || true
+  local plan_file="$plan_dir/$(_tx_ai_mem_project_slug).md"
+
+  local sys="You are a full AGY + Claude Code style autonomous CLI agent on ${TX_DEVICE} (${OSNAME:-Linux}), cwd=${PWD}.
 Work step-by-step using EXACTLY ONE action per reply:
+- ACTION: PLAN
+  Write a short markdown checklist ([ ] / [x]) of steps in a \`\`\` block.
 - ACTION: LS <dir>
-- ACTION: READ <file>
+- ACTION: FIND <pattern>
+- ACTION: GREP <pattern> [path]
+- ACTION: READ <file> [start:end]
 - ACTION: WRITE <file>
 \`\`\`
 <complete file contents>
+\`\`\`
+- ACTION: PATCH <file>
+\`\`\`
+<<<OLD
+<exact lines to replace>
+===
+<new lines>
+>>>
 \`\`\`
 - ACTION: RUN <shell_command>
 - ACTION: REMEMBER <short_fact>
 - ACTION: DONE
 <concise summary of what was accomplished>
 
-Always verify files/commands after writing when appropriate, and finish with ACTION: DONE."
+Inspect existing files before editing, verify after changes, and finish with ACTION: DONE."
 
   local -a hist=("user" "Goal: ${goal}")
   local step reply action arg body obs cmd_out ec ans
-  for ((step=1; step<=8; step++)); do
-    printf '%s[agent step %d/8]%s thinking...\n' "$TX_CD" "$step" "$TX_CX"
+  for ((step=1; step<=12; step++)); do
+    printf '%s[agent step %d/12]%s thinking...\n' "$TX_CD" "$step" "$TX_CX"
     reply=$(_tx_ai_call "$sys" "${hist[@]}") || return 1
     hist+=("assistant" "$reply")
 
@@ -3313,47 +3841,102 @@ Always verify files/commands after writing when appropriate, and finish with ACT
         printf '%s\n' "$reply" | sed '/^ACTION:/d' | _tx_ai_render
         return 0
         ;;
+      PLAN)
+        body=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+        [[ -z $body ]] && body=$(printf '%s\n' "$reply" | sed '/^ACTION:/d')
+        printf '%s\n' "$body" > "$plan_file" 2>/dev/null || true
+        printf '%s[plan]%s\n%s\n' "$TX_CA" "$TX_CX" "$body"
+        obs="Plan updated."
+        ;;
       LS)
         local d="${arg:-.}"
         printf '%s[ls]%s %s\n' "$TX_CA" "$TX_CX" "$d"
         obs=$(ls -la "$d" 2>&1 | head -n 60 || true)
         ;;
+      FIND)
+        local pat="${arg:-*}"
+        printf '%s[find]%s %s\n' "$TX_CA" "$TX_CX" "$pat"
+        obs=$(find . -maxdepth 4 -not -path '*/.git*' -not -path '*/node_modules*' -iname "*${pat}*" 2>&1 | head -n 60 || true)
+        ;;
+      GREP)
+        local gpat gpath="."
+        read -r gpat gpath <<< "$arg"
+        gpath="${gpath:-.}"
+        printf '%s[grep]%s %s in %s\n' "$TX_CA" "$TX_CX" "$gpat" "$gpath"
+        if command -v rg >/dev/null 2>&1; then
+          obs=$(rg -n --max-count 40 -- "$gpat" "$gpath" 2>&1 | head -n 60 || true)
+        else
+          obs=$(grep -rn --exclude-dir=.git --exclude-dir=node_modules -- "$gpat" "$gpath" 2>&1 | head -n 60 || true)
+        fi
+        [[ -z $obs ]] && obs="(no matches)"
+        ;;
       READ)
-        printf '%s[read]%s %s\n' "$TX_CA" "$TX_CX" "$arg"
-        obs=$(_tx_ai_read_file_ctx "$arg" 2>&1 || true)
+        local rfile rrange=""
+        read -r rfile rrange <<< "$arg"
+        printf '%s[read]%s %s %s\n' "$TX_CA" "$TX_CX" "$rfile" "$rrange"
+        if [[ "$rrange" =~ ^[0-9]+:[0-9]+$ && -f "$rfile" ]]; then
+          local sline="${rrange%:*}" eline="${rrange#*:}"
+          obs=$(nl -ba "$rfile" 2>/dev/null | sed -n "${sline},${eline}p" | head -c 16384 || true)
+        else
+          obs=$(_tx_ai_read_file_ctx "$rfile" 2>&1 || true)
+        fi
         ;;
       REMEMBER)
         _tx_ai_mem_add --project "$arg" >/dev/null 2>&1 || true
         obs="Saved to project memory: ${arg}"
         ;;
+      PATCH)
+        body=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+        if [[ -z $body ]]; then
+          obs="ERROR: ACTION: PATCH requires a code block."
+        elif (( auto )) || _tx_ai_should_auto write "$arg"; then
+          _tx_ai_agent_patch "$arg" "$body" 1 && obs="Patched ${arg} successfully." || obs="Patch failed (OLD block not found in ${arg}; use ACTION: WRITE)."
+        else
+          printf '%s[agent patch]%s %s\n%s\n' "$TX_CA" "$TX_CX" "$arg" "${body:0:600}"
+          printf '%sApprove? [y] Patch  [a] Auto-all  [n] Skip : %s' "$TX_CY" "$TX_CX"
+          read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+          echo
+          if [[ "$ans" == a || "$ans" == A ]]; then auto=1; ans="y"; fi
+          if [[ "$ans" == y || "$ans" == Y ]]; then
+            _tx_ai_agent_patch "$arg" "$body" 1 && obs="Patched ${arg} successfully." || obs="Patch failed (OLD block not found in ${arg}; use ACTION: WRITE)."
+          else
+            obs="User skipped patching ${arg}."
+          fi
+        fi
+        ;;
       WRITE)
         body=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
         if [[ -z $body ]]; then
           obs="ERROR: ACTION: WRITE requires a code block."
-        else
-          if (( ! auto )) && [[ -t 0 && -t 1 ]]; then
-            printf '%s[agent write]%s %s (%d lines)\n' "$TX_CA" "$TX_CX" "$arg" "$(printf '%s' "$body" | wc -l | tr -d ' ')"
-            if [[ -f "$arg" ]] && command -v diff >/dev/null 2>&1; then
-              printf '%s' "$body" | diff -u "$arg" - 2>/dev/null | head -n 30 || true
-            fi
-            printf '%sApprove? [y] Write  [a] Auto-all  [n] Skip : %s' "$TX_CY" "$TX_CX"
-            read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
-            echo
-            if [[ "$ans" == a || "$ans" == A ]]; then auto=1; ans="y"; fi
-            if [[ "$ans" == y || "$ans" == Y ]]; then
-              _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
-            else
-              obs="User skipped writing ${arg}."
-            fi
-          else
-            _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
+        elif (( auto )) || _tx_ai_should_auto write "$arg"; then
+          _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
+        elif [[ -t 0 && -t 1 ]]; then
+          printf '%s[agent write]%s %s (%d lines)\n' "$TX_CA" "$TX_CX" "$arg" "$(printf '%s' "$body" | wc -l | tr -d ' ')"
+          if [[ -f "$arg" ]] && command -v diff >/dev/null 2>&1; then
+            printf '%s' "$body" | diff -u "$arg" - 2>/dev/null | head -n 30 || true
           fi
+          printf '%sApprove? [y] Write  [a] Auto-all  [n] Skip : %s' "$TX_CY" "$TX_CX"
+          read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+          echo
+          if [[ "$ans" == a || "$ans" == A ]]; then auto=1; ans="y"; fi
+          if [[ "$ans" == y || "$ans" == Y ]]; then
+            _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
+          else
+            obs="User skipped writing ${arg}."
+          fi
+        else
+          _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
         fi
         ;;
       RUN)
         printf '%s[agent run]%s %s\n' "$TX_CA" "$TX_CX" "$arg"
         local do_run=1
-        if (( ! auto )) && [[ -t 0 && -t 1 ]]; then
+        local run_auto=$auto
+        if (( ! run_auto )) && _tx_ai_should_auto cmd "$arg"; then
+          run_auto=1
+          _tx_say "[auto-safe] approved"
+        fi
+        if (( ! run_auto )) && [[ -t 0 && -t 1 ]]; then
           printf '%sApprove? [y] Run  [a] Auto-all  [e] Edit  [n] Skip : %s' "$TX_CY" "$TX_CX"
           read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
           echo
@@ -3385,7 +3968,7 @@ Always verify files/commands after writing when appropriate, and finish with ACT
     esac
     hist+=("user" "Observation:"$'\n'"${obs}")
   done
-  _tx_warn "agent reached max steps (8)"
+  _tx_warn "agent reached max steps (12)"
 }
 
 _tx_ai_diff() {
@@ -3492,8 +4075,9 @@ _tx_ai_explain() {
 }
 
 _tx_ai_chat() {
-  printf '\n%s=== /ai CHAT (%s | %s | mood:%s) ===%s\n' "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "${TX_AI_MOOD:-fast}" "$TX_CX"
-  printf '%sCommands: /help  /run  /code <f>  /remember <txt>  /mem  /mood <m>  /route <r>  /save  /clear  /exit%s\n\n' "$TX_CD" "$TX_CX"
+  printf '\n%s=== /ai CHAT (%s | %s | mood:%s | auto:%s) ===%s\n' \
+    "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "${TX_AI_MOOD:-fast}" "${TX_AI_AUTO:-off}" "$TX_CX"
+  printf '%sCommands: /help  /agent  /make  /edit  /run  /read  /grep  /auto  /skill  /compact  /exit%s\n\n' "$TX_CD" "$TX_CX"
   local -a hist=()
   local -a last_cmds=()
   local line reply c
@@ -3506,6 +4090,17 @@ _tx_ai_chat() {
       /clear)
         hist=(); last_cmds=()
         _tx_say "chat history cleared"
+        continue
+        ;;
+      /compact)
+        if (( ${#hist[@]} <= 2 )); then
+          _tx_warn "chat history already compact"
+        else
+          local comp
+          comp=$(_tx_ai_call "Summarize this conversation into concise context bullet points preserving key decisions, files, and code details." "${hist[@]}") || continue
+          hist=("user" "Previous conversation summary:"$'\n'"${comp}" "assistant" "Understood. Continuing from summary.")
+          _tx_say "compacted chat history"
+        fi
         continue
         ;;
       /status)
@@ -3526,6 +4121,15 @@ _tx_ai_chat() {
         tx_ai_mood "${line#/mood }"
         continue
         ;;
+      /auto|/auto\ *)
+        tx_ai_auto ${line#/auto}
+        continue
+        ;;
+      /skill|/skill\ *)
+        tx_ai_skill ${line#/skill}
+        _tx_ai_load
+        continue
+        ;;
       /route\ *)
         tx_ai_route ${line#/route }
         _tx_ai_load
@@ -3537,6 +4141,40 @@ _tx_ai_chat() {
         ;;
       /mem|/mem\ *)
         tx_ai_mem ${line#/mem}
+        continue
+        ;;
+      /plan)
+        local pf="$TX_HOME/memory/plans/$(_tx_ai_mem_project_slug).md"
+        [[ -f "$pf" ]] && cat "$pf" || _tx_warn "no active plan for this project"
+        continue
+        ;;
+      /ls|/ls\ *)
+        ls -la ${line#/ls}
+        continue
+        ;;
+      /grep\ *)
+        local gp="${line#/grep }"
+        grep -rn --exclude-dir=.git --exclude-dir=node_modules -- "$gp" . 2>/dev/null | head -n 40 || _tx_warn "no matches"
+        continue
+        ;;
+      /read\ *)
+        local rf="${line#/read }" rc
+        if rc=$(_tx_ai_read_file_ctx "$rf"); then
+          hist+=("user" "Loaded file ${rf} into context:"$'\n'"\`\`\`"$'\n'"${rc}"$'\n'"\`\`\`" "assistant" "Read ${rf}.")
+          _tx_say "loaded ${rf} into chat context"
+        fi
+        continue
+        ;;
+      /agent\ *)
+        _tx_ai_agent ${line#/agent }
+        continue
+        ;;
+      /make\ *)
+        _tx_ai_make ${line#/make }
+        continue
+        ;;
+      /edit\ *)
+        _tx_ai_edit ${line#/edit }
         continue
         ;;
       /save)
@@ -3577,18 +4215,22 @@ _tx_ai_chat() {
         continue
         ;;
       /help)
+        echo "  /agent <goal>    run multi-step CLI agent (ls, grep, read, write, patch, run)"
+        echo "  /make <f> <desc> create a new file/script"
+        echo "  /edit <f> <task> edit an existing file"
+        echo "  /read <file>     load a file into chat context"
+        echo "  /grep <pattern>  search codebase"
+        echo "  /ls [dir]        list files"
         echo "  /run             run command(s) from the last AI reply"
         echo "  /code <file>     analyze a code file"
+        echo "  /auto [off|safe|on] set auto-approve mode"
+        echo "  /skill [list|use|install] manage AGY SKILL.md packs"
         echo "  /remember <txt>  save fact to persistent memory"
-        echo "  /mem [list|...]  manage memory store"
-        echo "  /save            summarize & save key facts from chat to memory"
+        echo "  /mem | /save     manage memory / save chat facts"
+        echo "  /plan | /compact view plan / compact chat history"
         echo "  /mood <m>        set mood (fast|coder|teacher|strict|friendly)"
         echo "  /route <r>       switch or manage AI routes"
-        echo "  /clear           clear conversation history"
-        echo "  /model <name>    switch model"
-        echo "  /config          re-run setup wizard"
-        echo "  /status          show current AI config"
-        echo "  /exit            leave chat"
+        echo "  /clear | /exit   clear history / leave chat"
         continue
         ;;
     esac
@@ -3611,16 +4253,23 @@ _tx_ai_chat() {
 
 tx_ai() {
   _tx_ai_load
+  local _TX_AI_FORCE_AUTO=""
+  if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" || "${1:-}" == "--yolo" ]]; then
+    _TX_AI_FORCE_AUTO="on"
+    shift
+  fi
   local sub="${1:-}"
   case "$sub" in
     -h|--help|help)
       cat <<'EOF'
-Usage: /ai [option | prompt]
-  /ai                         First-time setup wizard, or interactive AI chat
-  /ai <prompt>                One-shot question (also accepts piped stdin)
+Usage: /ai [-y] [option | prompt]
+  /ai                         First-time setup wizard, or Claude-style AI chat
+  /ai [-y] <prompt>           One-shot question (-y = auto-approve commands)
+  /ai auto <off|safe|on>      Persistent auto-approve mode (safe skips dangerous rm/dd/mkfs)
+  /ai skill [...]             Install/manage AGY SKILL.md packs (also: aiskill)
   /ai make <file> <desc>      Create a new file/script (Save or Save & Run)
   /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
-  /ai agent [-y] <goal>       Multi-step CLI agent (ls, read, write, run, verify)
+  /ai agent [-y] <goal>       Full AGY/Claude CLI agent (ls, find, grep, read, write, patch, run, plan)
   /ai -c <task>               Generate one shell command and prompt before running
   /ai do <task>               AI command runner (execute & auto-fix on error)
   /ai code <file> [question]  Analyze/review a code file for bugs & improvements
@@ -3639,6 +4288,16 @@ Usage: /ai [option | prompt]
   /ai reset                   Remove ~/.sino/ai.conf
 EOF
       return 0
+      ;;
+    auto)
+      shift
+      tx_ai_auto "$@"
+      return $?
+      ;;
+    skill|skills)
+      shift
+      tx_ai_skill "$@"
+      return $?
       ;;
     config|setup)
       _tx_ai_wizard
@@ -3798,6 +4457,11 @@ EOF
         [[ -n $qc ]] && qcmds+=("$qc")
       done < <(printf '%s\n' "$ans" | _tx_ai_extract_cmds)
       if (( ${#qcmds[@]} > 0 && ${#qcmds[@]} <= 6 )); then
+        if (( ${#qcmds[@]} == 1 )) && _tx_ai_should_auto cmd "${qcmds[0]}"; then
+          printf '\n%s[+] [auto]%s %s\n' "$TX_C2" "$TX_CX" "${qcmds[0]}"
+          _tx_ai_exec_with_autofix "${qcmds[0]}"
+          return $?
+        fi
         echo
         local qi
         for ((qi=0; qi<${#qcmds[@]}; qi++)); do
@@ -3987,7 +4651,11 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="make edit agent do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -c cmd --help"
+        words="make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -y -c cmd --help"
+      elif [[ "$prev" == auto ]]; then
+        words="off safe on status"
+      elif [[ "$prev" == skill || "$prev" == skills ]]; then
+        words="list install create show use off remove auto"
       elif [[ "$prev" == set ]]; then
         words="type base_url api_key model system temp max_tokens timeout"
       elif [[ "$prev" == type ]]; then
@@ -3999,6 +4667,18 @@ _tx_subcmd_complete() {
       elif [[ "$prev" == mem ]]; then
         words="list add project topic search del forget edit clear auto"
       fi
+      ;;
+    aiskill)
+      if (( COMP_CWORD == 1 )); then
+        words="list install create show use off remove auto"
+      elif [[ "$prev" == install ]]; then
+        words="all vps-admin termux-pro python-dev bash-ninja web-dev docker-ops security-audit"
+      elif [[ "$prev" == auto ]]; then
+        words="on off"
+      fi
+      ;;
+    txcron)
+      (( COMP_CWORD == 1 )) && words="list add rm"
       ;;
     airoute)
       if (( COMP_CWORD == 1 )); then
@@ -4063,7 +4743,7 @@ _tx_register_complete() {
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
     ssh python python3 py py3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
-    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh /ai ai txai airoute aimem 2>/dev/null || true
+    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh txcron /ai ai txai airoute aimem aiskill 2>/dev/null || true
 }
 _tx_register_complete
 
@@ -4107,11 +4787,15 @@ txmem()       { tx_mem "$@"; }
 txtemp()      { tx_temp "$@"; }
 txlog()       { tx_log "$@"; }
 txssh()       { tx_ssh "$@"; }
+txenv()       { tx_env "$@"; }
+txcron()      { tx_cron "$@"; }
+txbench()     { tx_bench "$@"; }
 /ai()         { tx_ai "$@"; }
 ai()          { tx_ai "$@"; }
 txai()        { tx_ai "$@"; }
 airoute()     { tx_ai_route "$@"; }
 aimem()       { tx_ai_mem "$@"; }
+aiskill()     { tx_ai_skill "$@"; }
 /remember()   { _tx_ai_mem_add "$@"; }
 remember()    { _tx_ai_mem_add "$@"; }
 
@@ -4278,10 +4962,14 @@ else
     temp|txtemp)   tx_temp "$@" ;;
     log|txlog)     tx_log "$@" ;;
     ssh|txssh)     tx_ssh "$@" ;;
+    env|txenv)     tx_env "$@" ;;
+    cron|txcron)   tx_cron "$@" ;;
+    bench|txbench) tx_bench "$@" ;;
     ai|/ai|txai)   tx_ai "$@" ;;
     airoute|route) tx_ai_route "$@" ;;
     aimem|mem)     tx_ai_mem "$@" ;;
+    aiskill|skill) tx_ai_skill "$@" ;;
     remember|/remember) _tx_ai_mem_add "$@" ;;
-    *) echo "usage: $0 {help|ai|/ai|airoute|aimem|remember|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
+    *) echo "usage: $0 {help|ai|/ai|airoute|aimem|aiskill|remember|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|txenv|txcron|txbench|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
   esac
 fi
