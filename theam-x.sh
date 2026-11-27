@@ -1289,16 +1289,19 @@ tx_help() {
   printf '\n%s=== THEAM-X v%s (%s | theme:%s | prompt:%s | rain:%s) ===%s\n\n' \
     "$TX_C2" "$(tx_local_ver)" "$TX_DEVICE" "$TX_THEME" "$TX_PROMPT" "$TX_RAIN" "$TX_CX"
   cat <<EOF
-${TX_CA}Small AI Assistant (/ai)${TX_CX}
+${TX_CA}Small AI Assistant (/ai | airoute | aimem)${TX_CX}
   /ai                         Setup wizard (first run) or interactive AI chat
-  /ai <prompt>                Ask AI directly (supports piped stdin)
+  /ai <prompt>                Ask AI directly (auto-routes by mood & recalls memory)
   /ai -c <task>               Generate one shell command & confirm before running
   /ai do <task>               Interactive AI command runner (runs & auto-fixes errors)
   /ai code <file> [question]  Analyze/review a code file for bugs & improvements
   /ai fix <file> [issue]      Find bugs in file & optionally apply fix (.bak saved)
   /ai explain <file|cmd>      Explain a code file or shell command
+  airoute [add|use|list|auto] Multi-provider routes & mood auto-routing
+  /ai mood <mode>             Mood: fast | coder | teacher | strict | friendly
+  aimem [add|list|search|del] Persistent AGY-style memory (global + per-project)
+  /remember <fact>            Save a persistent fact into AI memory immediately
   /ai config | status | test  Configure base_url / api_key / model / type / etcs
-  /ai set <key> <value>       Set: type, base_url, api_key, model, system, temp, max_tokens
 
 ${TX_CA}Theme & Visuals${TX_CX}
   txtheme [name|prompt|rain]  Switch colors, prompt style, rain, boot, banner, update
@@ -1826,6 +1829,12 @@ tx_diag() {
   else
     printf '  %b /ai not configured yet (run: /ai config)\n' "$wn"
   fi
+  local rcnt=0 mcnt=0
+  if [[ -d "$TX_HOME/routes" ]]; then
+    rcnt=$(ls -1 "$TX_HOME/routes"/*.conf 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  [[ -f "$TX_HOME/memory/global.md" ]] && mcnt=$(grep -c '^- ' "$TX_HOME/memory/global.md" 2>/dev/null || echo 0)
+  printf '  %b /ai routes: %s saved | memory: %s global item(s)\n' "$ok" "${rcnt:-0}" "${mcnt:-0}"
   echo
 }
 
@@ -2078,6 +2087,8 @@ EOF
   fi
 }
 
+TX_AI_MOODS=(fast coder teacher strict friendly)
+
 _tx_ai_load() {
   TX_AI_TYPE=""
   TX_AI_BASE_URL=""
@@ -2087,6 +2098,10 @@ _tx_ai_load() {
   TX_AI_TEMP="0.7"
   TX_AI_MAX_TOKENS="4096"
   TX_AI_TIMEOUT="45"
+  TX_AI_MOOD="fast"
+  TX_AI_ROUTE=""
+  TX_AI_AUTOROUTE="1"
+  TX_AI_AUTO_MEM="1"
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
   case "$TX_AI_SYSTEM" in
@@ -2098,7 +2113,7 @@ _tx_ai_load() {
 _tx_ai_save() {
   mkdir -p "$TX_HOME" || return 1
   local tmp="$TX_HOME/.aicfg.$$"
-  local q_type q_url q_key q_model q_sys q_temp q_tok q_to
+  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am
   printf -v q_type  '%q' "$TX_AI_TYPE"
   printf -v q_url   '%q' "${TX_AI_BASE_URL%/}"
   printf -v q_key   '%q' "$TX_AI_API_KEY"
@@ -2107,6 +2122,10 @@ _tx_ai_save() {
   printf -v q_temp  '%q' "$TX_AI_TEMP"
   printf -v q_tok   '%q' "$TX_AI_MAX_TOKENS"
   printf -v q_to    '%q' "$TX_AI_TIMEOUT"
+  printf -v q_mood  '%q' "${TX_AI_MOOD:-fast}"
+  printf -v q_rt    '%q' "${TX_AI_ROUTE:-}"
+  printf -v q_ar    '%q' "${TX_AI_AUTOROUTE:-1}"
+  printf -v q_am    '%q' "${TX_AI_AUTO_MEM:-1}"
   (
     umask 077
     {
@@ -2119,6 +2138,10 @@ _tx_ai_save() {
       echo "TX_AI_TEMP=$q_temp"
       echo "TX_AI_MAX_TOKENS=$q_tok"
       echo "TX_AI_TIMEOUT=$q_to"
+      echo "TX_AI_MOOD=$q_mood"
+      echo "TX_AI_ROUTE=$q_rt"
+      echo "TX_AI_AUTOROUTE=$q_ar"
+      echo "TX_AI_AUTO_MEM=$q_am"
     } > "$tmp"
   ) && chmod 600 "$tmp" && mv -f "$tmp" "$TX_HOME/ai.conf" && chmod 600 "$TX_HOME/ai.conf"
 }
@@ -2150,6 +2173,10 @@ _tx_ai_status() {
   printf '%sBase URL   :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_BASE_URL:-unset}"
   printf '%sAPI Key    :%s %s\n' "$TX_CA" "$TX_CX" "$(_tx_ai_mask_key "${TX_AI_API_KEY:-}")"
   printf '%sModel      :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MODEL:-unset}"
+  printf '%sRoute/Mood :%s %s | mood:%s | auto-route:%s | auto-mem:%s\n' \
+    "$TX_CA" "$TX_CX" "${TX_AI_ROUTE:-default}" "${TX_AI_MOOD:-fast}" \
+    "$([[ ${TX_AI_AUTOROUTE:-1} == 1 ]] && echo on || echo off)" \
+    "$([[ ${TX_AI_AUTO_MEM:-1} == 1 ]] && echo on || echo off)"
   printf '%sTemp       :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_TEMP:-0.7}"
   printf '%sMax Tokens :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MAX_TOKENS:-4096}"
   printf '%sTimeout    :%s %ss\n' "$TX_CA" "$TX_CX" "${TX_AI_TIMEOUT:-45}"
@@ -2452,9 +2479,406 @@ _tx_ai_extract_code_block() {
   '
 }
 
+_tx_ai_mood_instruction() {
+  local m="${1:-${TX_AI_MOOD:-fast}}"
+  case "$m" in
+    coder)    printf 'MOOD=coder: Focus on clean, bug-free code, diffs, edge cases, and security. Minimal prose.' ;;
+    teacher)  printf 'MOOD=teacher: Explain clearly step-by-step with short practical examples.' ;;
+    strict)   printf 'MOOD=strict: Ultra-terse, technical facts and commands only. Zero filler.' ;;
+    friendly) printf 'MOOD=friendly: Warm, encouraging, clear, and concise terminal helper.' ;;
+    *)        printf 'MOOD=fast: Direct, concise 1-4 lines + exact runnable commands.' ;;
+  esac
+}
+
+_tx_ai_route_dir() { printf '%s/routes' "$TX_HOME"; }
+
+_tx_ai_load_route() {
+  local name="$1" rf
+  rf="$(_tx_ai_route_dir)/${name}.conf"
+  [[ -f "$rf" ]] || return 1
+  local TX_RT_TYPE="" TX_RT_URL="" TX_RT_KEY="" TX_RT_MODEL=""
+  . "$rf"
+  _tx_in_list "${TX_RT_TYPE:-}" "${TX_AI_TYPES[@]}" || return 1
+  [[ -n ${TX_RT_URL:-} && -n ${TX_RT_MODEL:-} ]] || return 1
+  TX_AI_TYPE="$TX_RT_TYPE"
+  TX_AI_BASE_URL="${TX_RT_URL%/}"
+  TX_AI_API_KEY="${TX_RT_KEY:-}"
+  TX_AI_MODEL="$TX_RT_MODEL"
+  return 0
+}
+
+_tx_ai_route_pick_for_task() {
+  local hint="$1" rdir
+  rdir="$(_tx_ai_route_dir)"
+  [[ "${TX_AI_AUTOROUTE:-1}" == 1 && -d "$rdir" ]] || return 1
+  local low="${hint,,}" cand=""
+  if [[ "${_TX_AI_HINT_MODE:-}" == "code" || "$low" =~ (code|bug|fix|error|debug|script|python|bash|javascript|typescript|rust|golang|sql|regex|refactor|function|syntax) ]]; then
+    for cand in code coder dev; do
+      [[ -f "$rdir/${cand}.conf" ]] && { printf '%s' "$cand"; return 0; }
+    done
+  elif [[ "${_TX_AI_HINT_MODE:-}" == "explain" || "$low" =~ (explain|architect|design|compare|plan|why|analyze|review|write) ]]; then
+    for cand in smart pro reason; do
+      [[ -f "$rdir/${cand}.conf" ]] && { printf '%s' "$cand"; return 0; }
+    done
+  elif [[ "${_TX_AI_HINT_MODE:-}" == "cmd" || "$low" =~ (install|port|check|status|find|kill|disk|mem|how|cmd|command|tunnel) ]]; then
+    for cand in fast quick speed; do
+      [[ -f "$rdir/${cand}.conf" ]] && { printf '%s' "$cand"; return 0; }
+    done
+  fi
+  if [[ "$low" =~ (offline|private|secret|password|local) && -f "$rdir/local.conf" ]]; then
+    printf 'local'; return 0
+  fi
+  return 1
+}
+
+# =====================================================================
+#  MEMORY STORE SYSTEM (like AGY: global + per-project + topics)
+# =====================================================================
+_tx_ai_mem_dir() { printf '%s/memory' "$TX_HOME"; }
+
+_tx_ai_mem_project_slug() {
+  local root=""
+  if command -v git >/dev/null 2>&1; then
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  fi
+  [[ -z $root ]] && root="$PWD"
+  local name="${root##*/}"
+  [[ -z $name ]] && name="root"
+  printf '%s' "${name//[^A-Za-z0-9_.-]/_}"
+}
+
+_tx_ai_mem_init() {
+  local mdir
+  mdir="$(_tx_ai_mem_dir)"
+  ( umask 077 && mkdir -p "$mdir/projects" "$mdir/topics" ) || return 1
+  [[ -f "$mdir/global.md" ]] || printf '# Theam-X Global Memory\n' > "$mdir/global.md"
+  chmod 600 "$mdir/global.md" 2>/dev/null || true
+}
+
+_tx_ai_mem_add() {
+  local scope="global" text=""
+  if [[ "${1:-}" == "--project" || "${1:-}" == "-p" ]]; then
+    scope="project"; shift
+  fi
+  text="$*"
+  text="$(_tx_strip_ctrl "$text")"
+  [[ -n "${text// /}" ]] || { _tx_err "usage: aimem add [--project] <fact>"; return 1; }
+  _tx_ai_mem_init || return 1
+  local target mdir
+  mdir="$(_tx_ai_mem_dir)"
+  if [[ "$scope" == "project" ]]; then
+    local slug; slug=$(_tx_ai_mem_project_slug)
+    target="$mdir/projects/${slug}.md"
+    [[ -f "$target" ]] || printf '# Project Memory: %s (%s)\n' "$slug" "$PWD" > "$target"
+  else
+    target="$mdir/global.md"
+  fi
+  if grep -qF "] ${text}" "$target" 2>/dev/null; then
+    _tx_warn "already remembered in ${scope} memory"
+    return 0
+  fi
+  local ts
+  ts=$(date '+%Y-%m-%d %H:%M' 2>/dev/null || echo "now")
+  printf -- '- [%s] %s\n' "$ts" "$text" >> "$target"
+  chmod 600 "$target" 2>/dev/null || true
+  _tx_say "saved to ${scope} memory: ${text}"
+}
+
+_tx_ai_mem_context() {
+  [[ "${TX_AI_AUTO_MEM:-1}" == 1 ]] || return 0
+  local query="${1:-}" mdir slug pfile out="" gitems="" pitems=""
+  mdir="$(_tx_ai_mem_dir)"
+  [[ -d "$mdir" ]] || return 0
+  if [[ -f "$mdir/global.md" ]]; then
+    gitems=$(grep '^- ' "$mdir/global.md" 2>/dev/null | tail -n 20 || true)
+    [[ -n $gitems ]] && out+="Global memory:"$'\n'"${gitems}"$'\n'
+  fi
+  slug=$(_tx_ai_mem_project_slug)
+  pfile="$mdir/projects/${slug}.md"
+  if [[ -f "$pfile" ]]; then
+    pitems=$(grep '^- ' "$pfile" 2>/dev/null | tail -n 15 || true)
+    [[ -n $pitems ]] && out+="Project (${slug}) memory:"$'\n'"${pitems}"$'\n'
+  fi
+  if [[ -d "$mdir/topics" && -n $query ]]; then
+    local tf tname qlow="${query,,}"
+    for tf in "$mdir/topics"/*.md; do
+      [[ -f "$tf" ]] || continue
+      tname="${tf##*/}"; tname="${tname%.md}"
+      if [[ "$qlow" == *"${tname,,}"* ]]; then
+        out+="Topic (${tname}):"$'\n'"$(head -c 800 "$tf" 2>/dev/null)"$'\n'
+      fi
+    done
+  fi
+  [[ -n $out ]] && printf '%s' "${out:0:3072}"
+}
+
+tx_ai_mem() {
+  local sub="${1:-list}" mdir slug pfile
+  mdir="$(_tx_ai_mem_dir)"
+  slug=$(_tx_ai_mem_project_slug)
+  pfile="$mdir/projects/${slug}.md"
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: aimem | /ai mem [subcommand]
+  aimem                         List global, current project, and topic memories
+  aimem add <fact>              Save a fact to global memory (also: /remember <fact>)
+  aimem project <fact>          Save a fact to current project memory
+  aimem topic <name> <note>     Save/append a named knowledge topic note
+  aimem search <query>          Search across all stored memories
+  aimem del [project] <num>     Delete memory line by number
+  aimem forget <keyword>        Remove entries matching keyword
+  aimem edit [project]          Edit memory file in $EDITOR
+  aimem clear [--project|--all] Clear project or all memories
+  aimem auto <on|off>           Toggle automatic memory recall in /ai
+EOF
+      return 0
+      ;;
+    list|show|"")
+      _tx_ai_mem_init || return 1
+      printf '\n%s=== MEMORY STORE (AGY-style) ===%s\n' "$TX_C2" "$TX_CX"
+      printf '%sGlobal (%s/global.md):%s\n' "$TX_CA" "$mdir" "$TX_CX"
+      if grep -q '^- ' "$mdir/global.md" 2>/dev/null; then
+        grep '^- ' "$mdir/global.md" | nl -w2 -s') '
+      else
+        echo "  (empty)"
+      fi
+      printf '\n%sProject [%s]:%s\n' "$TX_CA" "$slug" "$TX_CX"
+      if [[ -f "$pfile" ]] && grep -q '^- ' "$pfile" 2>/dev/null; then
+        grep '^- ' "$pfile" | nl -w2 -s') '
+      else
+        echo "  (empty)"
+      fi
+      if ls "$mdir/topics"/*.md >/dev/null 2>&1; then
+        printf '\n%sTopics:%s\n' "$TX_CA" "$TX_CX"
+        local tf
+        for tf in "$mdir/topics"/*.md; do
+          printf '  - %s\n' "$(basename "$tf" .md)"
+        done
+      fi
+      echo
+      ;;
+    add|remember)
+      shift
+      _tx_ai_mem_add "$@"
+      ;;
+    project|proj)
+      shift
+      _tx_ai_mem_add --project "$@"
+      ;;
+    topic)
+      shift
+      local tname="${1:-}"
+      [[ -n $tname && $# -ge 2 ]] || { _tx_err "usage: aimem topic <name> <text>"; return 1; }
+      shift
+      tname="${tname//[^A-Za-z0-9_.-]/_}"
+      _tx_ai_mem_init || return 1
+      printf -- '- [%s] %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$mdir/topics/${tname}.md"
+      chmod 600 "$mdir/topics/${tname}.md" 2>/dev/null || true
+      _tx_say "saved topic '${tname}'"
+      ;;
+    search|find)
+      shift
+      local q="$*"
+      [[ -n $q ]] || { _tx_err "usage: aimem search <query>"; return 1; }
+      [[ -d "$mdir" ]] || { _tx_warn "no memories stored yet"; return 0; }
+      grep -rn -i -- "$q" "$mdir" 2>/dev/null || _tx_warn "no matches for '$q'"
+      ;;
+    del|rm)
+      local target="$mdir/global.md" num="${2:-}"
+      if [[ "${2:-}" == "project" || "${2:-}" == "-p" ]]; then
+        target="$pfile"; num="${3:-}"
+      fi
+      _tx_is_int "$num" && (( num >= 1 )) || { _tx_err "usage: aimem del [project] <number>"; return 1; }
+      [[ -f "$target" ]] || { _tx_err "memory file not found"; return 1; }
+      local tmpf="$TX_HOME/.memtmp.$$"
+      awk -v idx="$num" '
+        /^- / { c++; if (c == idx) next }
+        { print }
+      ' "$target" > "$tmpf" && mv -f "$tmpf" "$target" && chmod 600 "$target"
+      _tx_say "deleted memory #${num}"
+      ;;
+    forget)
+      shift
+      local kw="$*"
+      [[ -n $kw ]] || { _tx_err "usage: aimem forget <keyword>"; return 1; }
+      local f
+      for f in "$mdir/global.md" "$pfile"; do
+        [[ -f "$f" ]] || continue
+        local tmpf="$TX_HOME/.memtmp.$$"
+        awk -v k="${kw,,}" '
+          /^- / && index(tolower($0), k) > 0 { next }
+          { print }
+        ' "$f" > "$tmpf" && mv -f "$tmpf" "$f" && chmod 600 "$f"
+      done
+      _tx_say "forgot entries matching '${kw}'"
+      ;;
+    edit)
+      _tx_ai_mem_init || return 1
+      local target="$mdir/global.md"
+      [[ "${2:-}" == "project" || "${2:-}" == "-p" ]] && target="$pfile"
+      local ed="${EDITOR:-}"
+      [[ -z $ed ]] && { command -v nano >/dev/null 2>&1 && ed=nano || ed=vi; }
+      "$ed" "$target"
+      ;;
+    clear)
+      case "${2:-}" in
+        --project|-p) rm -f "$pfile"; _tx_say "cleared project memory (${slug})" ;;
+        --all|-a)     rm -rf "$mdir"; _tx_ai_mem_init; _tx_say "cleared all memories" ;;
+        *)            printf '# Theam-X Global Memory\n' > "$mdir/global.md"; _tx_say "cleared global memory" ;;
+      esac
+      ;;
+    auto)
+      _tx_ai_load
+      case "${2:-}" in
+        on|1)  TX_AI_AUTO_MEM=1; _tx_ai_save; _tx_say "auto-memory -> ON" ;;
+        off|0) TX_AI_AUTO_MEM=0; _tx_ai_save; _tx_say "auto-memory -> OFF" ;;
+        *) _tx_err "usage: aimem auto <on|off>"; return 1 ;;
+      esac
+      ;;
+    *)
+      _tx_err "unknown subcommand '$sub'. Run: aimem --help"
+      return 1
+      ;;
+  esac
+}
+
+tx_ai_mood() {
+  _tx_ai_load
+  local m="${1:-}"
+  if [[ -z $m || $m == list ]]; then
+    printf '%sActive mood:%s %s  %s(options: %s)%s\n' "$TX_CA" "$TX_CX" "${TX_AI_MOOD:-fast}" "$TX_CD" "${TX_AI_MOODS[*]}" "$TX_CX"
+    return 0
+  fi
+  _tx_in_list "$m" "${TX_AI_MOODS[@]}" || { _tx_err "unknown mood '$m'. Choose: ${TX_AI_MOODS[*]}"; return 1; }
+  TX_AI_MOOD="$m"
+  _tx_ai_save && _tx_say "AI mood -> ${m}"
+}
+
+tx_ai_route() {
+  _tx_ai_load
+  local sub="${1:-list}" rdir
+  rdir="$(_tx_ai_route_dir)"
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: airoute | /ai route [subcommand]
+  airoute                         List saved routes, active route, mood, and auto-route
+  airoute add <name> [t url k m]  Add/update a named route (e.g. fast, code, smart, local)
+  airoute save <name>             Save current /ai config as a named route
+  airoute use <name>              Switch active route
+  airoute del <name>              Delete a saved route
+  airoute mood <mode>             Set mood: fast | coder | teacher | strict | friendly
+  airoute auto <on|off>           Toggle automatic task/mood routing
+EOF
+      return 0
+      ;;
+    list|show|"")
+      printf '\n%s=== AI ROUTES & MOOD ===%s\n' "$TX_C2" "$TX_CX"
+      printf '%sActive Route :%s %s (%s | %s)\n' "$TX_CA" "$TX_CX" "${TX_AI_ROUTE:-default}" "${TX_AI_TYPE:-unset}" "${TX_AI_MODEL:-unset}"
+      printf '%sUser Mood    :%s %s  (%s)\n' "$TX_CA" "$TX_CX" "${TX_AI_MOOD:-fast}" "${TX_AI_MOODS[*]}"
+      printf '%sAuto-Route   :%s %s  (routes: fast / code / smart / local by task)\n' \
+        "$TX_CA" "$TX_CX" "$([[ ${TX_AI_AUTOROUTE:-1} == 1 ]] && echo on || echo off)"
+      printf '\n%sSaved Routes (%s):%s\n' "$TX_CA" "$rdir" "$TX_CX"
+      if ls "$rdir"/*.conf >/dev/null 2>&1; then
+        local rf rname mark
+        for rf in "$rdir"/*.conf; do
+          rname="$(basename "$rf" .conf)"
+          mark=" "; [[ "$rname" == "${TX_AI_ROUTE:-}" ]] && mark="*"
+          local TX_RT_TYPE="" TX_RT_URL="" TX_RT_KEY="" TX_RT_MODEL=""
+          . "$rf"
+          printf '  %s[%s]%s %-10s %-10s %s\n' "$TX_C2" "$mark" "$TX_CX" "$rname" "$TX_RT_TYPE" "$TX_RT_MODEL"
+        done
+      else
+        echo "  (none — add routes like 'fast', 'code', 'smart' with: airoute add <name>)"
+      fi
+      echo
+      ;;
+    add)
+      local rname="${2:-}"
+      [[ -n $rname ]] || { _tx_err "usage: airoute add <name> [type base_url api_key model]"; return 1; }
+      rname="${rname//[^A-Za-z0-9_.-]/_}"
+      local rtype="${3:-}" rurl="${4:-}" rkey="${5:-}" rmodel="${6:-}"
+      if [[ -z $rtype ]]; then
+        [[ -t 0 && -t 1 ]] || { _tx_err "non-interactive: airoute add <name> <type> <url> <key> <model>"; return 1; }
+        printf '%sType (openai|gemini|anthropic|ollama) [openai]: %s' "$TX_CY" "$TX_CX"; read -r rtype </dev/tty; rtype="${rtype:-openai}"
+        _tx_in_list "$rtype" "${TX_AI_TYPES[@]}" || { _tx_err "invalid type"; return 1; }
+        local durl dmod; durl=$(_tx_ai_default_url "$rtype"); dmod=$(_tx_ai_default_model "$rtype")
+        printf '%sBase URL [%s]: %s' "$TX_CY" "$durl" "$TX_CX"; read -r rurl </dev/tty; rurl="${rurl:-$durl}"
+        printf '%sAPI Key%s: ' "$TX_CY" "$TX_CX"; read -rs rkey </dev/tty; echo
+        printf '%sModel [%s]: %s' "$TX_CY" "$dmod" "$TX_CX"; read -r rmodel </dev/tty; rmodel="${rmodel:-$dmod}"
+      fi
+      _tx_in_list "$rtype" "${TX_AI_TYPES[@]}" || { _tx_err "type must be: ${TX_AI_TYPES[*]}"; return 1; }
+      [[ -n $rurl && -n $rmodel ]] || { _tx_err "base_url and model required"; return 1; }
+      ( umask 077 && mkdir -p "$rdir" ) || return 1
+      local qt qu qk qm
+      printf -v qt '%q' "$rtype"; printf -v qu '%q' "${rurl%/}"; printf -v qk '%q' "$rkey"; printf -v qm '%q' "$rmodel"
+      (
+        umask 077
+        printf 'TX_RT_TYPE=%s\nTX_RT_URL=%s\nTX_RT_KEY=%s\nTX_RT_MODEL=%s\n' "$qt" "$qu" "$qk" "$qm" > "$rdir/${rname}.conf"
+      ) && chmod 600 "$rdir/${rname}.conf"
+      _tx_say "saved route '${rname}' (${rtype} / ${rmodel})"
+      ;;
+    save)
+      local rname="${2:-}"
+      [[ -n $rname ]] || { _tx_err "usage: airoute save <name>"; return 1; }
+      _tx_ai_is_configured || { _tx_err "configure /ai first"; return 1; }
+      tx_ai_route add "$rname" "$TX_AI_TYPE" "$TX_AI_BASE_URL" "$TX_AI_API_KEY" "$TX_AI_MODEL"
+      TX_AI_ROUTE="$rname"; _tx_ai_save
+      ;;
+    use)
+      local rname="${2:-}"
+      [[ -n $rname ]] || { _tx_err "usage: airoute use <name>"; return 1; }
+      _tx_ai_load_route "$rname" || { _tx_err "route '${rname}' not found"; return 1; }
+      TX_AI_ROUTE="$rname"
+      _tx_ai_save && _tx_say "switched active route -> ${rname} (${TX_AI_TYPE} / ${TX_AI_MODEL})"
+      ;;
+    del|rm)
+      local rname="${2:-}"
+      [[ -n $rname ]] || { _tx_err "usage: airoute del <name>"; return 1; }
+      rm -f "$rdir/${rname}.conf"
+      [[ "${TX_AI_ROUTE:-}" == "$rname" ]] && { TX_AI_ROUTE=""; _tx_ai_save; }
+      _tx_say "removed route '${rname}'"
+      ;;
+    mood)
+      shift; tx_ai_mood "$@"
+      ;;
+    auto)
+      case "${2:-}" in
+        on|1)  TX_AI_AUTOROUTE=1; _tx_ai_save; _tx_say "auto-route -> ON" ;;
+        off|0) TX_AI_AUTOROUTE=0; _tx_ai_save; _tx_say "auto-route -> OFF" ;;
+        *) _tx_err "usage: airoute auto <on|off>"; return 1 ;;
+      esac
+      ;;
+    *)
+      if _tx_ai_load_route "$sub" 2>/dev/null; then
+        TX_AI_ROUTE="$sub"
+        _tx_ai_save && _tx_say "switched active route -> ${sub} (${TX_AI_TYPE} / ${TX_AI_MODEL})"
+      elif _tx_in_list "$sub" "${TX_AI_MOODS[@]}"; then
+        tx_ai_mood "$sub"
+      else
+        _tx_err "unknown route/option '$sub'. Run: airoute --help"
+        return 1
+      fi
+      ;;
+  esac
+}
+
 _tx_ai_call() {
   # args: system_override(or empty), role/msg pairs...
   local sys_ovr="$1"; shift
+  local -a msgs=("$@")
+  local last_msg="${msgs[$(( ${#msgs[@]} - 1 ))]:-}"
+  local TX_AI_TYPE="$TX_AI_TYPE" TX_AI_BASE_URL="$TX_AI_BASE_URL" TX_AI_API_KEY="$TX_AI_API_KEY" TX_AI_MODEL="$TX_AI_MODEL"
+  local _routed=""
+  if _routed=$(_tx_ai_route_pick_for_task "$last_msg"); then
+    _tx_ai_load_route "$_routed" 2>/dev/null || _routed=""
+  fi
+  local _eff_mood="${TX_AI_MOOD:-fast}"
+  if [[ -z "${_TX_AI_EXPLICIT_MOOD:-}" && ( "${_TX_AI_HINT_MODE:-}" == "code" || "$_routed" == code* ) ]]; then
+    _eff_mood="coder"
+  fi
+
   local sys="$sys_ovr"
   if [[ -z $sys ]]; then
     if [[ "${TX_AI_SYSTEM:-DEFAULT}" == "DEFAULT" ]]; then
@@ -2462,8 +2886,11 @@ _tx_ai_call() {
     else
       sys="${TX_AI_SYSTEM} [Env: device=${TX_DEVICE}, os=${OSNAME:-$(uname -s 2>/dev/null || echo Linux)}, arch=$(uname -m 2>/dev/null || echo unknown), cwd=${PWD}]"
     fi
+    sys+=$'\n'"$(_tx_ai_mood_instruction "$_eff_mood")"
   fi
-  local -a msgs=("$@")
+  local mem_ctx=""
+  mem_ctx=$(_tx_ai_mem_context "$last_msg")
+  [[ -n $mem_ctx ]] && sys+=$'\n\n'"[Persistent Memory - use silently when relevant]:"$'\n'"${mem_ctx}"
   local tmp="$TX_HOME/.aitmp.$$"
   ( umask 077 && mkdir -p "$tmp" ) || { _tx_err "cannot create temp dir"; return 1; }
   trap 'rm -rf "$tmp"' RETURN
@@ -2719,7 +3146,7 @@ _tx_ai_code() {
   local q="${*:-Analyze this code: explain what it does, spot any bugs, security issues, or improvements.}"
   local content
   content=$(_tx_ai_read_file_ctx "$f") || return 1
-  local reply
+  local reply _TX_AI_HINT_MODE="code"
   reply=$(_tx_ai_call "" "user" "File: ${f}"$'\n'"Task: ${q}"$'\n\n'"Code (with line numbers):"$'\n'"\`\`\`"$'\n'"${content}"$'\n'"\`\`\`") || return 1
   printf '%s\n' "$reply" | _tx_ai_render
 }
@@ -2732,7 +3159,7 @@ _tx_ai_fix() {
   local content
   content=$(_tx_ai_read_file_ctx "$f") || return 1
   local sys="You are a senior developer fixing ${f}. First list the bugs concisely, then provide the COMPLETE corrected file inside a single \`\`\` code block."
-  local reply
+  local reply _TX_AI_HINT_MODE="code"
   reply=$(_tx_ai_call "$sys" "user" "File: ${f}"$'\n'"Issue: ${issue}"$'\n\n'"Current code:"$'\n'"\`\`\`"$'\n'"${content}"$'\n'"\`\`\`") || return 1
   printf '%s\n' "$reply" | _tx_ai_render
 
@@ -2763,8 +3190,8 @@ _tx_ai_explain() {
 }
 
 _tx_ai_chat() {
-  printf '\n%s=== /ai CHAT (%s | %s) ===%s\n' "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "$TX_CX"
-  printf '%sCommands: /help  /run  /code <file>  /clear  /model <m>  /config  /status  /exit%s\n\n' "$TX_CD" "$TX_CX"
+  printf '\n%s=== /ai CHAT (%s | %s | mood:%s) ===%s\n' "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "${TX_AI_MOOD:-fast}" "$TX_CX"
+  printf '%sCommands: /help  /run  /code <f>  /remember <txt>  /mem  /mood <m>  /route <r>  /save  /clear  /exit%s\n\n' "$TX_CD" "$TX_CX"
   local -a hist=()
   local -a last_cmds=()
   local line reply c
@@ -2793,6 +3220,36 @@ _tx_ai_chat() {
         _tx_ai_save && _tx_say "model -> $TX_AI_MODEL"
         continue
         ;;
+      /mood\ *)
+        tx_ai_mood "${line#/mood }"
+        continue
+        ;;
+      /route\ *)
+        tx_ai_route ${line#/route }
+        _tx_ai_load
+        continue
+        ;;
+      /remember\ *)
+        _tx_ai_mem_add "${line#/remember }"
+        continue
+        ;;
+      /mem|/mem\ *)
+        tx_ai_mem ${line#/mem}
+        continue
+        ;;
+      /save)
+        if (( ${#hist[@]} == 0 )); then
+          _tx_warn "nothing in chat to summarize yet"
+        else
+          local sum
+          sum=$(_tx_ai_call "Extract 1-3 short durable facts or user preferences from this conversation as one line per fact (no bullets, no fluff)." "${hist[@]}") || continue
+          local sl
+          while IFS= read -r sl; do
+            [[ -n "${sl// /}" ]] && _tx_ai_mem_add "$sl"
+          done <<< "$sum"
+        fi
+        continue
+        ;;
       /code\ *)
         local cf="${line#/code }"
         _tx_ai_code "$cf"
@@ -2818,13 +3275,18 @@ _tx_ai_chat() {
         continue
         ;;
       /help)
-        echo "  /run           run command(s) from the last AI reply"
-        echo "  /code <file>   analyze a code file"
-        echo "  /clear         clear conversation history"
-        echo "  /model <name>  switch model"
-        echo "  /config        re-run setup wizard"
-        echo "  /status        show current AI config"
-        echo "  /exit          leave chat"
+        echo "  /run             run command(s) from the last AI reply"
+        echo "  /code <file>     analyze a code file"
+        echo "  /remember <txt>  save fact to persistent memory"
+        echo "  /mem [list|...]  manage memory store"
+        echo "  /save            summarize & save key facts from chat to memory"
+        echo "  /mood <m>        set mood (fast|coder|teacher|strict|friendly)"
+        echo "  /route <r>       switch or manage AI routes"
+        echo "  /clear           clear conversation history"
+        echo "  /model <name>    switch model"
+        echo "  /config          re-run setup wizard"
+        echo "  /status          show current AI config"
+        echo "  /exit            leave chat"
         continue
         ;;
     esac
@@ -2859,6 +3321,10 @@ Usage: /ai [option | prompt]
   /ai code <file> [question]  Analyze/review a code file for bugs & improvements
   /ai fix <file> [issue]      Analyze bugs & optionally apply fix (.bak saved)
   /ai explain <file|cmd>      Explain a code file or shell command
+  /ai route [...]             Multi-provider routes & auto-routing (also: airoute)
+  /ai mood <mode>             Set mood: fast | coder | teacher | strict | friendly
+  /ai mem [...]               AGY-style persistent memory store (also: aimem)
+  /ai remember <fact>         Save fact to memory (also: /remember <fact>)
   /ai config | setup          Configure type, base_url, api_key, model, temp, tokens, system
   /ai set <key> <value>       Set: type | base_url | api_key | model | system | temp | max_tokens | timeout
   /ai status | show           Show active AI settings (API key masked)
@@ -2883,6 +3349,26 @@ EOF
       rm -f "$TX_HOME/ai.conf"
       _tx_say "removed $TX_HOME/ai.conf"
       return 0
+      ;;
+    route|routes)
+      shift
+      tx_ai_route "$@"
+      return $?
+      ;;
+    mood)
+      shift
+      tx_ai_mood "$@"
+      return $?
+      ;;
+    mem|memory)
+      shift
+      tx_ai_mem "$@"
+      return $?
+      ;;
+    remember)
+      shift
+      _tx_ai_mem_add "$@"
+      return $?
       ;;
     set)
       local k="${2:-}"
@@ -3159,11 +3645,33 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="do run code check review fix explain config setup status show test set reset -c cmd --help"
+        words="do run code check review fix explain route mood mem remember config setup status show test set reset -c cmd --help"
       elif [[ "$prev" == set ]]; then
         words="type base_url api_key model system temp max_tokens timeout"
       elif [[ "$prev" == type ]]; then
         words="openai gemini anthropic ollama"
+      elif [[ "$prev" == mood ]]; then
+        words="fast coder teacher strict friendly list"
+      elif [[ "$prev" == route ]]; then
+        words="list add save use del mood auto"
+      elif [[ "$prev" == mem ]]; then
+        words="list add project topic search del forget edit clear auto"
+      fi
+      ;;
+    airoute)
+      if (( COMP_CWORD == 1 )); then
+        words="list add save use del mood auto"
+      elif [[ "$prev" == mood ]]; then
+        words="fast coder teacher strict friendly list"
+      elif [[ "$prev" == auto ]]; then
+        words="on off"
+      fi
+      ;;
+    aimem)
+      if (( COMP_CWORD == 1 )); then
+        words="list add project topic search del forget edit clear auto"
+      elif [[ "$prev" == auto ]]; then
+        words="on off"
       fi
       ;;
     txlog)
@@ -3213,7 +3721,7 @@ _tx_register_complete() {
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
     ssh python python3 py py3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
-    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh /ai ai txai 2>/dev/null || true
+    txtheme txconfig sfetch Sfetch svc txwake dns txclean sysup txlog txssh /ai ai txai airoute aimem 2>/dev/null || true
 }
 _tx_register_complete
 
@@ -3260,6 +3768,10 @@ txssh()       { tx_ssh "$@"; }
 /ai()         { tx_ai "$@"; }
 ai()          { tx_ai "$@"; }
 txai()        { tx_ai "$@"; }
+airoute()     { tx_ai_route "$@"; }
+aimem()       { tx_ai_mem "$@"; }
+/remember()   { _tx_ai_mem_add "$@"; }
+remember()    { _tx_ai_mem_add "$@"; }
 
 # ---------------------------------------------------------------------
 #  short commands & aliases
@@ -3425,6 +3937,9 @@ else
     log|txlog)     tx_log "$@" ;;
     ssh|txssh)     tx_ssh "$@" ;;
     ai|/ai|txai)   tx_ai "$@" ;;
-    *) echo "usage: $0 {help|ai|/ai|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
+    airoute|route) tx_ai_route "$@" ;;
+    aimem|mem)     tx_ai_mem "$@" ;;
+    remember|/remember) _tx_ai_mem_add "$@" ;;
+    *) echo "usage: $0 {help|ai|/ai|airoute|aimem|remember|theme|config|sfetch|dev|hv|boot|matrix|myip|ports|netinfo|pingtest|dns|passgen|txcpu|txmem|txtemp|txlog|txssh|diskinfo|proctop|svc|sysup|txclean|extract|backup|serve|txdiag|txbattery|txstorage|txwake|update|version}"; exit 1 ;;
   esac
 fi

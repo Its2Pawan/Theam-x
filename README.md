@@ -13,7 +13,7 @@
 **Hacker-style terminal theme, system toolkit & built-in `/ai` assistant for VPS and Termux**
 7 color themes · 4 prompt styles · 3 matrix rain modes · `/ai` chat & command helper · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-2.3.0-brightgreen)
+![version](https://img.shields.io/badge/version-2.4.0-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
@@ -77,6 +77,11 @@ cat error.log | /ai summarize    # Pipe logs directly to AI
 /ai code app.py                  # Analyze code file for bugs & improvements
 /ai fix script.sh                # Fix bugs in file (creates .bak backup)
 /ai explain nginx.conf           # Explain any code file or command
+airoute add fast openai https://api.groq.com/openai/v1 gsk_... llama-3.3-70b-versatile
+airoute add code anthropic https://api.anthropic.com/v1 sk-ant-... claude-3-5-sonnet-latest
+/ai mood coder                   # Mood: fast | coder | teacher | strict | friendly
+/remember my VPS domain is example.com
+aimem                            # Manage AGY-style global, project & topic memories
 /ai config                       # Re-run setup wizard
 /ai status | /ai test | /ai reset
 ```
