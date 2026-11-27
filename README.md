@@ -10,10 +10,10 @@
 
 # Theam-X
 
-**Hacker-style terminal theme for your VPS and Termux**
-0/1 matrix rain · boot screen · live monitor · `sfetch` · auto-update
+**Hacker-style terminal theme & toolkit for VPS and Termux**
+6 color themes · 4 prompt styles · 3 matrix rain modes · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-1.0.1-brightgreen)
+![version](https://img.shields.io/badge/version-2.0.0-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
@@ -24,18 +24,19 @@
 
 ## Features
 
-- **Boot screen**: 0/1 matrix rain with a typed-out startup log (kernel, OS, IP, CPU, RAM, disk, services, uptime) every time you log in. It will not replay on quick reconnects.
-- **`sfetch`**: system info next to a TX logo. Works on VPS and Termux.
-- **`dev`**: developer info card.
-- **`hv`**: live system monitor (CPU, RAM, disk, load, network, services) over the rain.
-- **`matrix`**: full-screen 0/1 rain.
-- **Hacker prompt**: shows user, host, path, git branch and the last command's error code.
-- **Auto-update**: checks `ver.txt` on GitHub once a day and updates itself.
-- **Multi-device**: detects VPS or Termux and adapts (no systemd or blocked `/proc` on Android is handled).
+- **Multiple Color Themes (`txtheme`)**: `matrix`, `cyber`, `crimson`, `amber`, `ice`, `purple` — switch live or save to config.
+- **Multiple Prompt Styles**: `hacker` (2-line box), `minimal` (1-line), `power` (device + time + git + exit code), `compact`.
+- **Multiple Rain Modes**: `binary` (`0/1`), `hex` (`0-9A-F`), `glyph` (`!@#$%&*...`).
+- **Boot screen (`hvboot`)**: Matrix rain with typed startup log (press any key to skip; respects cooldown).
+- **`sfetch`**: Animated rain info panel, or `sfetch -q` / `--cli` for instant TX ASCII logo + system specs.
+- **`hv`**: Live system monitor (CPU, RAM, Disk, Load, Network speed, Battery, Services) with live hotkeys (`t` theme, `r` rain, `p` pause, `q` quit).
+- **Useful VPS + Termux Toolkit**: `myip`, `ports`, `netinfo`, `pingtest`, `dns`, `passgen`, `diskinfo`, `proctop`, `svc`, `sysup`, `txclean`, `extract`, `mkcd`, `backup`, `serve`, `txdiag`, `txbattery`, `txstorage`, `txwake`.
+- **Smart Bash Completion**: Case-insensitive path completion, `~/` directory completion, and subcommand completion.
+- **Auto-update**: Checks `ver.txt` on GitHub once a day with safe bash syntax validation before applying.
 
 ## Install
 
-**VPS** (Ubuntu / Debian / CentOS / Alpine / Arch, as root or with sudo)
+**VPS** (Ubuntu / Debian / CentOS / RHEL / Alpine / Arch, as root or with sudo)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Its2Pawan/Theam-x/main/install.sh | bash
@@ -59,84 +60,88 @@ Then load it:
 source ~/.bashrc
 ```
 
-Everything is installed into the hidden folder `~/.sino` (`/root/.sino` on a root VPS) and loaded from `~/.bashrc`.
+Everything is installed into `~/.sino` (`/root/.sino` on a root VPS) and loaded from `~/.bashrc`.
 
 ## Commands
 
+### Theme & Visuals
 | Command | What it does |
 |---|---|
-| `sfetch` / `Sfetch` | System info (OS, device, kernel, uptime, packages, CPU, RAM, disk, IP) |
-| `dev` | Developer info |
-| `hv` | Live monitor (`q` to quit) |
-| `hvboot` | Replay the boot screen |
-| `matrix` | Full-screen 0/1 rain (any key to exit) |
-| `txver` | Show installed version and check for updates |
+| `theamx` / `txhelp` | Show full command reference & active theme info |
+| `txtheme` | Interactive options menu (`txtheme <color>`, `txtheme prompt <style>`, `txtheme rain <mode>`) |
+| `txconfig` | View/set/edit/reset `~/.sino/config` safely (`show`, `get`, `set`, `edit`, `reset`) |
+| `sfetch` / `sfetch -q` | System info panel (`-q` / `--cli` for instant terminal output) |
+| `hv` | Live monitor (`t` theme, `r` rain, `p` pause, `q` quit) |
+| `hvboot` | Replay boot animation (any key to skip) |
+| `matrix` | Full-screen rain (`t` theme, `r` rain, `+`/`-` speed, any other key to exit) |
+| `dev` | Developer card |
+
+### Network & Security
+| Command | What it does |
+|---|---|
+| `myip` | Local IPv4/IPv6 + Public IP & ISP/location |
+| `ports` | Listening TCP/UDP ports (`ss`, `netstat`, or `/proc/net/tcp` fallback) |
+| `netinfo` | Network interfaces, default gateway, DNS servers |
+| `pingtest [host]` | Quick latency test (defaults to `1.1.1.1`, `8.8.8.8`, `github.com`) |
+| `dns <domain> [type]` | DNS record lookup (`dig`/`host`/`nslookup`/`getent`) |
+| `passgen [len] [count]` | Cryptographic random password generator |
+
+### System, VPS & Termux
+| Command | What it does |
+|---|---|
+| `diskinfo [path]` | Clean filesystem usage + top 10 largest items in path |
+| `proctop [n]` | Top CPU/RAM processes (GNU & BusyBox compatible) |
+| `svc [cmd] [name]` | Service manager (systemd / OpenRC / `termux-services`) |
+| `sysup [-y]` | Update OS packages (`pkg`, `apt-get`, `dnf`, `yum`, `apk`, `pacman`) |
+| `txclean [--all]` | Clean package & temp caches (`--all` also clears `~/.cache` & old journal logs) |
+| `txdiag` | Full VPS + Termux environment & health diagnostic |
+| `txbattery` | Battery level & status (`termux-battery-status` / sysfs) |
+| `txstorage` | Termux `~/storage` check/setup, or VPS disk mounts |
+| `txwake [on\|off]` | Toggle Termux CPU wake-lock |
+
+### Files & Helpers
+| Command | What it does |
+|---|---|
+| `extract <file>` | Extract `.tar.*`, `.zip`, `.gz`, `.bz2`, `.xz`, `.7z`, `.rar` |
+| `mkcd <dir>` | Create directory and `cd` into it |
+| `backup <file\|dir>` | Timestamped `.bak` or `.tar.gz` backup |
+| `serve [port] [dir]` | Quick local HTTP file server (default port `8080`) |
+
+### Updates & Removal
+| Command | What it does |
+|---|---|
+| `txver` | Show installed version, active theme, and check for updates |
 | `txupdate` | Update now from GitHub |
-
-## Auto-update
-
-On login, Theam-X compares your local `~/.sino/ver.txt` with `ver.txt` in this repository (at most once every 24 hours, in the background, so login is never slowed). If the repository has a higher version, it downloads `theam-x.sh`, checks that it is valid bash, replaces the old one, and tells you at your next login.
-
-Turn it off in `~/.sino/config`:
-
-```bash
-TX_AUTOUPDATE=0
-```
+| `txuninstall` | Uninstall Theam-X interactively |
 
 ## Configuration
 
-`~/.sino/config` (created on install, kept on reinstall):
+`~/.sino/config` (created on install, kept on reinstall, editable via `txtheme` or `txconfig`):
 
 ```bash
+TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple
+TX_PROMPT="hacker"         # hacker | minimal | power | compact
+TX_RAIN="binary"           # binary | hex | glyph
+TX_BOOT=1                  # 1 = boot animation on login, 0 = skip
 TX_AUTOUPDATE=1            # 0 = never auto update
 TX_CHECK_INTERVAL=86400    # seconds between update checks
 HV_COOLDOWN=300            # seconds before the boot animation can replay
 HV_SERVICES_STR="ssh nginx docker wings"   # services shown in `hv` (VPS)
-# HV_QUICK=1               # skip the boot animation
-# TX_DEV_DISCORD=""        # extra rows for the `dev` card
-# TX_DEV_SITE=""
 ```
 
 ## Uninstall
+
+Run `txuninstall` in your shell, or:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Its2Pawan/Theam-x/main/install.sh | bash -s uninstall
 ```
 
-or manually:
-
-```bash
-sed -i '/\.sino\/theam-x\.sh/d;/^# Theam-X$/d' ~/.bashrc && rm -rf ~/.sino
-```
-
-## Repository layout
-
-```
-Theam-x/
-├── install.sh     installer / uninstaller (VPS + Termux)
-├── theam-x.sh     the theme (boot, sfetch, dev, hv, matrix, prompt, updater)
-├── ver.txt        current version (used by auto-update)
-├── LICENSE        All Rights Reserved
-└── README.md
-```
-
-### Releasing an update
-
-1. Edit `theam-x.sh`.
-2. Raise the number in `ver.txt` (for example `1.0.1` to `1.0.2`).
-3. Push to `main`. Every installed device picks it up within a day, or immediately with `txupdate`.
-
 ## Requirements
 
 - bash 4+ (Termux and all current VPS distros have it)
 - `curl` or `wget` (the installer installs curl if both are missing)
-- A terminal of at least 50x14 characters for the animations
-
-## Notes
-
-- Theam-X is a **bash** theme; it is loaded from `~/.bashrc`.
-- Auto-update runs code from this repository on your device. Only install from the official repository.
-- Android blocks some system stats in Termux (for example CPU usage); those rows show `n/a`.
+- A terminal of at least 50x14 characters for the animated panels
 
 ## Author
 

@@ -10,6 +10,15 @@
 #  Installs into  ~/.sino   (VPS: /root/.sino  |  Termux: ~/.sino)
 # =====================================================================
 
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "[x] Please run this installer with bash (bash install.sh)" >&2
+  exit 1
+fi
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "[x] Bash 4+ is required (found ${BASH_VERSION})." >&2
+  exit 1
+fi
+
 REPO="Its2Pawan/Theam-x"
 BRANCH="${TX_BRANCH:-main}"
 RAW_BASE="${TX_RAW_BASE:-https://raw.githubusercontent.com}"
@@ -41,12 +50,14 @@ need_downloader() {
   elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y curl
   elif command -v apk     >/dev/null 2>&1; then $SUDO apk add curl
   elif command -v pacman  >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm curl
+  elif command -v zypper  >/dev/null 2>&1; then $SUDO zypper --non-interactive install curl
   fi
-  command -v curl >/dev/null 2>&1 || die "could not install curl - install curl or wget and re-run"
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "could not install curl - install curl or wget and re-run"
 }
 
 do_uninstall() {
   [[ -f "$RC" ]] && sed -i '/\.sino\/theam-x\.sh/d;/^# Theam-X$/d' "$RC"
+  rm -f "${XDG_RUNTIME_DIR:-${TMPDIR:-$HOME}}/.hv_boot_${UID:-0}" 2>/dev/null || true
   rm -rf "$DEST"
   say "Theam-X removed. Open a new shell to get your old prompt back."
   exit 0
@@ -105,11 +116,17 @@ BANNER
   # config (kept if it already exists)
   if [[ ! -f "$DEST/config" ]]; then
     {
-      echo "# Theam-X config  (edit, then open a new shell)"
-      echo "TX_AUTOUPDATE=1            # 0 = never auto update"
-      echo "TX_CHECK_INTERVAL=86400    # seconds between update checks"
-      echo "HV_COOLDOWN=300            # seconds before the boot animation can replay"
-      if [[ $DEVICE == vps ]]; then echo 'HV_SERVICES_STR="ssh nginx docker wings"   # services shown in hv'; fi
+      echo "# Theam-X config  (edit via: txtheme / txconfig)"
+      echo 'TX_THEME="matrix"          # matrix | cyber | crimson | amber | ice | purple'
+      echo 'TX_PROMPT="hacker"         # hacker | minimal | power | compact'
+      echo 'TX_RAIN="binary"           # binary | hex | glyph'
+      echo 'TX_BOOT=1                  # 1 = boot animation on login, 0 = skip'
+      echo 'TX_AUTOUPDATE=1            # 0 = never auto update'
+      echo 'TX_CHECK_INTERVAL=86400    # seconds between update checks'
+      echo 'HV_COOLDOWN=300            # seconds before the boot animation can replay'
+      if [[ $DEVICE == vps ]]; then
+        echo 'HV_SERVICES_STR="ssh nginx docker wings"   # services shown in hv'
+      fi
     } > "$DEST/config"
   fi
 
@@ -124,21 +141,32 @@ BANNER
   if ! grep -qF '.sino/theam-x.sh' "$RC"; then
     printf '\n# Theam-X\n[ -f "$HOME/.sino/theam-x.sh" ] && . "$HOME/.sino/theam-x.sh"\n' >> "$RC"
   fi
-  # login shells must read ~/.bashrc
-  if [[ -f "$HOME/.bash_profile" ]] && ! grep -q 'bashrc' "$HOME/.bash_profile"; then
-    printf '\n[ -f ~/.bashrc ] && . ~/.bashrc\n' >> "$HOME/.bash_profile"
+
+  # ensure login shells (SSH on VPS / Termux) source ~/.bashrc safely
+  if [[ -f "$HOME/.bash_profile" ]]; then
+    if ! grep -q 'bashrc' "$HOME/.bash_profile"; then
+      printf '\n[ -f ~/.bashrc ] && . ~/.bashrc\n' >> "$HOME/.bash_profile"
+    fi
+  elif [[ -f "$HOME/.profile" ]]; then
+    if ! grep -q 'bashrc' "$HOME/.profile"; then
+      printf '\nif [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n' >> "$HOME/.profile"
+    fi
+  elif [[ $DEVICE == termux ]]; then
+    printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' > "$HOME/.bash_profile"
   fi
 
   say "installed Theam-X v$(head -n1 "$DEST/ver.txt" | tr -d '[:space:]')"
   echo
   printf '%s\n' "${D}  Run now :${X}  source ~/.bashrc"
-  printf '%s\n' "${D}  Commands:${X}  sfetch | dev | hv | matrix | hvboot | txver | txupdate"
-  printf '%s\n' "${D}  Auto-update is ON (checks GitHub once a day). Turn off: TX_AUTOUPDATE=0 in $DEST/config${X}"
+  printf '%s\n' "${D}  Menu    :${X}  theamx  |  txtheme (switch colors/prompt/rain)"
+  printf '%s\n' "${D}  Panels  :${X}  sfetch [-q] | hv | matrix | hvboot | dev"
+  printf '%s\n' "${D}  Tools   :${X}  myip | ports | netinfo | pingtest | dns | diskinfo | proctop | svc | txdiag"
+  printf '%s\n' "${D}  Auto-update is ON (checks GitHub once a day). Turn off: txtheme autoupdate off${X}"
   echo
 }
 
 case "${1:-install}" in
   uninstall|remove) do_uninstall ;;
-  install|"")       do_install ;;
-  *) echo "usage: bash install.sh [install|uninstall]"; exit 1 ;;
+  install|update|"") do_install ;;
+  *) echo "usage: bash install.sh [install|update|uninstall]"; exit 1 ;;
 esac
