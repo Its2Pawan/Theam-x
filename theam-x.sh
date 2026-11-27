@@ -1289,9 +1289,10 @@ tx_help() {
   printf '\n%s=== THEAM-X v%s (%s | theme:%s | prompt:%s | rain:%s) ===%s\n\n' \
     "$TX_C2" "$(tx_local_ver)" "$TX_DEVICE" "$TX_THEME" "$TX_PROMPT" "$TX_RAIN" "$TX_CX"
   cat <<EOF
-${TX_CA}Small AI Assistant (/ai | airoute | aimem | aiskill)${TX_CX}
-  /ai                         Setup wizard (first run) or Claude-style AI chat
-  /ai [-y] <prompt>           Ask AI directly (-y: auto-approve; recalls memory+skills)
+${TX_CA}Small AI Assistant (/ai | agy | airoute | aimem | aiskill)${TX_CX}
+  agy [goal]                  Open Claude Code / AGY interactive CLI (or run goal)
+  /ai                         Setup wizard (first run) or interactive AI CLI
+  /ai cli | /ai [-y] <prompt> Open agent CLI or ask directly (-y: auto-approve)
   /ai auto <on|off|safe>      Persistent auto-approve (off / safe / on=YOLO)
   /ai make <file> <desc>      Create a new script/app file (Save / Save & Run)
   /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
@@ -4075,14 +4076,15 @@ _tx_ai_explain() {
 }
 
 _tx_ai_chat() {
-  printf '\n%s=== /ai CHAT (%s | %s | mood:%s | auto:%s) ===%s\n' \
-    "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "${TX_AI_MOOD:-fast}" "${TX_AI_AUTO:-off}" "$TX_CX"
-  printf '%sCommands: /help  /agent  /make  /edit  /run  /read  /grep  /auto  /skill  /compact  /exit%s\n\n' "$TX_CD" "$TX_CX"
+  local mode="${1:-chat}"
+  printf '\n%s=== /ai CLI (%s | %s | mode:%s | mood:%s | auto:%s) ===%s\n' \
+    "$TX_C2" "$TX_AI_TYPE" "$TX_AI_MODEL" "$mode" "${TX_AI_MOOD:-fast}" "${TX_AI_AUTO:-off}" "$TX_CX"
+  printf '%sCommands: /mode agent|chat  /agent  /make  /edit  /run  /read  /grep  /auto  /skill  /compact  /help  /exit%s\n\n' "$TX_CD" "$TX_CX"
   local -a hist=()
   local -a last_cmds=()
   local line reply c
   while true; do
-    printf '%syou > %s' "$TX_C2" "$TX_CX"
+    printf '%s[%s] you > %s' "$TX_C2" "$mode" "$TX_CX"
     IFS= read -r line || { echo; break; }
     [[ -z "${line// /}" ]] && continue
     case "$line" in
@@ -4214,7 +4216,17 @@ _tx_ai_chat() {
         fi
         continue
         ;;
+      /mode\ *)
+        local nm="${line#/mode }"
+        if [[ "$nm" == "agent" || "$nm" == "chat" ]]; then
+          mode="$nm"; _tx_say "CLI mode -> ${mode}"
+        else
+          _tx_err "usage: /mode <agent|chat>"
+        fi
+        continue
+        ;;
       /help)
+        echo "  /mode agent|chat switch between continuous AGY agent mode and chat"
         echo "  /agent <goal>    run multi-step CLI agent (ls, grep, read, write, patch, run)"
         echo "  /make <f> <desc> create a new file/script"
         echo "  /edit <f> <task> edit an existing file"
@@ -4237,6 +4249,10 @@ _tx_ai_chat() {
     hist+=("user" "$line")
     if (( ${#hist[@]} > 20 )); then
       hist=("${hist[@]:2}")
+    fi
+    if [[ "$mode" == "agent" ]]; then
+      _tx_ai_agent "$line"
+      continue
     fi
     reply=$(_tx_ai_call "" "${hist[@]}") || continue
     hist+=("assistant" "$reply")
@@ -4358,6 +4374,20 @@ EOF
         *) _tx_err "unknown key '$k'"; return 1 ;;
       esac
       _tx_ai_save && _tx_say "/ai ${k} saved"
+      return $?
+      ;;
+    cli|agy)
+      if ! _tx_ai_is_configured; then
+        _tx_warn "/ai needs configuration first (type, base_url, api_key, model)."
+        _tx_ai_wizard || return 1
+        _tx_ai_load
+      fi
+      shift
+      if (( $# > 0 )); then
+        _tx_ai_agent "$@"
+      else
+        _tx_ai_chat agent
+      fi
       return $?
       ;;
   esac
@@ -4651,7 +4681,7 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -y -c cmd --help"
+        words="cli agy make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember config setup status show test set reset -y -c cmd --help"
       elif [[ "$prev" == auto ]]; then
         words="off safe on status"
       elif [[ "$prev" == skill || "$prev" == skills ]]; then
@@ -4793,6 +4823,7 @@ txbench()     { tx_bench "$@"; }
 /ai()         { tx_ai "$@"; }
 ai()          { tx_ai "$@"; }
 txai()        { tx_ai "$@"; }
+agy()         { tx_ai cli "$@"; }
 airoute()     { tx_ai_route "$@"; }
 aimem()       { tx_ai_mem "$@"; }
 aiskill()     { tx_ai_skill "$@"; }
@@ -4802,6 +4833,7 @@ remember()    { _tx_ai_mem_add "$@"; }
 # ---------------------------------------------------------------------
 #  short commands & aliases
 # ---------------------------------------------------------------------
+unalias py py3 pipi cls tx reload ll la gst ga gc gp gpush gd gl agy 2>/dev/null || true
 py() {
   if command -v python3 >/dev/null 2>&1; then python3 "$@"
   elif command -v python >/dev/null 2>&1; then python "$@"
@@ -4966,6 +4998,7 @@ else
     cron|txcron)   tx_cron "$@" ;;
     bench|txbench) tx_bench "$@" ;;
     ai|/ai|txai)   tx_ai "$@" ;;
+    agy|cli)       tx_ai cli "$@" ;;
     airoute|route) tx_ai_route "$@" ;;
     aimem|mem)     tx_ai_mem "$@" ;;
     aiskill|skill) tx_ai_skill "$@" ;;

@@ -13,7 +13,7 @@
 **Hacker-style terminal theme, system toolkit & built-in `/ai` assistant for VPS and Termux**
 7 color themes · 4 prompt styles · 3 matrix rain modes · `/ai` chat & command helper · live monitor · VPS & Termux utilities · auto-update
 
-![version](https://img.shields.io/badge/version-2.6.0-brightgreen)
+![version](https://img.shields.io/badge/version-2.6.1-brightgreen)
 ![shell](https://img.shields.io/badge/shell-bash-green)
 ![platform](https://img.shields.io/badge/platform-VPS%20%7C%20Termux-black)
 ![license](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
