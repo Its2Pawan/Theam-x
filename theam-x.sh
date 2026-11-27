@@ -1303,6 +1303,7 @@ ${TX_CA}Small AI Assistant (/ai | txagent | airoute | aimem | aiskill)${TX_CX}
   /ai err <command>           Run command and auto-diagnose/fix any error
   aiskill [list|install|use]  Install/manage AGY SKILL.md packs (built-in / GitHub / URL)
   airoute [add|use|list|auto] Multi-provider routes & mood auto-routing
+  airotate [on|off|add|next]  Auto-rotate models & routes on HTTP 429/quota/5xx
   aimem [add|list|search|del] Persistent AGY-style memory (/remember <fact>)
   /ai config | status | test  Configure base_url / api_key / model / type / etcs
   Ctrl+O | txfull | /full     Expand/view full last AI or command output
@@ -2176,7 +2177,7 @@ You are a fast Termux (Android ${arch}) terminal copilot.
 STRICT RULES:
 1. Give instructions ONLY for Termux (pkg/bash/Android). NEVER mention Linux VPS, Ubuntu, Debian, CentOS, apt, or sudo unless the user explicitly asks.
 2. Always prefer 'pkg install <pkg>' first on Termux (e.g. 'pkg install cloudflared'). Only use 'curl -fsSL' if no pkg exists, and install binaries to '\$PREFIX/bin/' (never '\$HOME/bin/').
-3. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands.
+3. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands. If required details (like package name) are missing, ask briefly WITHOUT writing fake \`<placeholder>\` bash commands.
 4. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
 EOF
   else
@@ -2187,7 +2188,7 @@ EOF
 You are a fast Linux VPS (${OSNAME:-Linux} ${arch}, ${pkgmgr}) terminal copilot.
 STRICT RULES:
 1. Give instructions ONLY for this Linux VPS (${pkgmgr}). NEVER mention Termux or unrelated distros unless the user explicitly asks.
-2. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands.
+2. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands. If required details (like package name) are missing, ask briefly WITHOUT writing fake \`<placeholder>\` bash commands.
 3. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
 EOF
   fi
@@ -2212,6 +2213,8 @@ _tx_ai_load() {
   TX_AI_SKILL=""
   TX_AI_AUTO_SKILL="1"
   TX_AI_COMPACT="1"
+  TX_AI_ROTATE="1"
+  TX_AI_ROTATE_MODELS=""
   [[ -f "$TX_HOME/ai.conf" ]] && . "$TX_HOME/ai.conf"
   TX_AI_BASE_URL="${TX_AI_BASE_URL%/}"
   if [[ -z "${TX_AI_MAX_TOKENS:-}" || "${TX_AI_MAX_TOKENS}" == "1024" ]]; then
@@ -2226,7 +2229,7 @@ _tx_ai_load() {
 _tx_ai_save() {
   mkdir -p "$TX_HOME" || return 1
   local tmp="$TX_HOME/.aicfg.$$"
-  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am q_auto q_sk q_as q_cmp
+  local q_type q_url q_key q_model q_sys q_temp q_tok q_to q_mood q_rt q_ar q_am q_auto q_sk q_as q_cmp q_rot q_rmod
   printf -v q_type  '%q' "$TX_AI_TYPE"
   printf -v q_url   '%q' "${TX_AI_BASE_URL%/}"
   printf -v q_key   '%q' "$TX_AI_API_KEY"
@@ -2243,6 +2246,8 @@ _tx_ai_save() {
   printf -v q_sk    '%q' "${TX_AI_SKILL:-}"
   printf -v q_as    '%q' "${TX_AI_AUTO_SKILL:-1}"
   printf -v q_cmp   '%q' "${TX_AI_COMPACT:-1}"
+  printf -v q_rot   '%q' "${TX_AI_ROTATE:-1}"
+  printf -v q_rmod  '%q' "${TX_AI_ROTATE_MODELS:-}"
   (
     umask 077
     {
@@ -2263,6 +2268,8 @@ _tx_ai_save() {
       echo "TX_AI_SKILL=$q_sk"
       echo "TX_AI_AUTO_SKILL=$q_as"
       echo "TX_AI_COMPACT=$q_cmp"
+      echo "TX_AI_ROTATE=$q_rot"
+      echo "TX_AI_ROTATE_MODELS=$q_rmod"
     } > "$tmp"
   ) && chmod 600 "$tmp" && mv -f "$tmp" "$TX_HOME/ai.conf" && chmod 600 "$TX_HOME/ai.conf"
 }
@@ -2297,11 +2304,13 @@ _tx_ai_status() {
   printf '%sRoute/Mood :%s %s | mood:%s | auto-approve:%s | skill:%s\n' \
     "$TX_CA" "$TX_CX" "${TX_AI_ROUTE:-default}" "${TX_AI_MOOD:-fast}" \
     "${TX_AI_AUTO:-off}" "${TX_AI_SKILL:-auto}"
-  printf '%sToggles    :%s auto-route:%s | auto-mem:%s | auto-skill:%s\n' \
+  printf '%sToggles    :%s auto-route:%s | auto-mem:%s | auto-skill:%s | rotate:%s\n' \
     "$TX_CA" "$TX_CX" \
     "$([[ ${TX_AI_AUTOROUTE:-1} == 1 ]] && echo on || echo off)" \
     "$([[ ${TX_AI_AUTO_MEM:-1} == 1 ]] && echo on || echo off)" \
-    "$([[ ${TX_AI_AUTO_SKILL:-1} == 1 ]] && echo on || echo off)"
+    "$([[ ${TX_AI_AUTO_SKILL:-1} == 1 ]] && echo on || echo off)" \
+    "$([[ ${TX_AI_ROTATE:-1} == 1 ]] && echo on || echo off)"
+  [[ -n "${TX_AI_ROTATE_MODELS:-}" ]] && printf '%sRotate List:%s %s\n' "$TX_CA" "$TX_CX" "$TX_AI_ROTATE_MODELS"
   printf '%sTemp       :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_TEMP:-0.7}"
   printf '%sMax Tokens :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_MAX_TOKENS:-4096}"
   printf '%sTimeout    :%s %ss\n' "$TX_CA" "$TX_CX" "${TX_AI_TIMEOUT:-45}"
@@ -2991,6 +3000,10 @@ EOF
         *) _tx_err "usage: airoute auto <on|off>"; return 1 ;;
       esac
       ;;
+    rotate|models)
+      shift
+      tx_ai_rotate "$@"
+      ;;
     *)
       if _tx_ai_load_route "$sub" 2>/dev/null; then
         TX_AI_ROUTE="$sub"
@@ -3003,6 +3016,356 @@ EOF
       fi
       ;;
   esac
+}
+
+_tx_ai_default_rotate_models() {
+  local t="${1:-}" u="${2:-}"
+  case "$t" in
+    gemini)    printf '%s\n' gemini-2.5-flash gemini-2.5-flash-lite gemini-2.0-flash gemini-2.0-flash-lite gemini-1.5-flash ;;
+    openai)
+      if [[ -z $u || "$u" == *api.openai.com* ]]; then
+        printf '%s\n' gpt-4o-mini gpt-4.1-mini gpt-4.1-nano gpt-4o
+      fi
+      ;;
+    anthropic) printf '%s\n' claude-3-5-haiku-latest claude-3-5-sonnet-latest ;;
+  esac
+}
+
+_tx_ai_cooldown_id() {
+  local t="$1" u="$2" k="$3" m="$4" kh="none"
+  (( ${#k} > 0 )) && kh="${k: -6}"
+  printf '%s|%s|%s|%s' "$t" "${u%/}" "$kh" "$m"
+}
+
+_tx_ai_cooldown_active() {
+  local id="$1" f="$TX_HOME/.rotate_cooldown" now
+  [[ -s "$f" ]] || return 1
+  now=$(printf '%(%s)T' -1)
+  awk -F'\t' -v now="$now" -v id="$id" '$1 > now && $2 == id { f=1; exit } END { exit !f }' "$f" 2>/dev/null
+}
+
+_tx_ai_cooldown_mark() {
+  local id="$1" secs="${2:-600}" f="$TX_HOME/.rotate_cooldown" now exp tmpf
+  _tx_is_int "$secs" || secs=600
+  now=$(printf '%(%s)T' -1)
+  exp=$(( now + secs ))
+  tmpf="$TX_HOME/.cdtmp.$$"
+  (
+    umask 077
+    mkdir -p "$TX_HOME" 2>/dev/null || exit 1
+    {
+      [[ -s "$f" ]] && awk -F'\t' -v now="$now" -v id="$id" '$1 > now && $2 != id { print }' "$f" 2>/dev/null
+      printf '%s\t%s\n' "$exp" "$id"
+    } > "$tmpf" && chmod 600 "$tmpf" && mv -f "$tmpf" "$f"
+  ) 2>/dev/null || rm -f "$tmpf"
+}
+
+_tx_ai_is_rotatable_err() {
+  local code="$1" msg="${2,,}"
+  case "$code" in
+    429|500|502|503|504|529) return 0 ;;
+    404)
+      [[ "$msg" =~ (model|not[[:space:]]+found|not[[:space:]]+supported|deprecated) ]] && return 0
+      ;;
+  esac
+  [[ "$msg" =~ (quota|rate.?limit|resource_exhausted|too[[:space:]]+many[[:space:]]+requests|overloaded|capacity|model.*not[[:space:]]+found|not[[:space:]]+supported|deprecated|temporarily[[:space:]]+unavailable|try[[:space:]]+again|exceeded) ]]
+}
+
+_tx_ai_build_candidates() {
+  # Outputs tab-separated lines: type<TAB>url<TAB>key<TAB>model<TAB>label
+  # Fresh (non-cooled) candidates first, then cooled candidates (for last-resort retry).
+  local ptype="$1" purl="$2" pkey="$3" pmodel="$4" plabel="$5"
+  local -a raw=() fresh=() cooled=()
+  local -A seen=()
+  local sep=$'\t' id
+
+  _add_cand() {
+    local ct="$1" cu="${2%/}" ck="$3" cm="$4" cl="$5"
+    [[ -n $ct && -n $cu && -n $cm ]] || return 0
+    local sig="${ct}|${cu}|${ck}|${cm}"
+    [[ -n ${seen[$sig]:-} ]] && return 0
+    seen[$sig]=1
+    raw+=("${ct}${sep}${cu}${sep}${ck}${sep}${cm}${sep}${cl}")
+  }
+
+  _add_cand "$ptype" "$purl" "$pkey" "$pmodel" "$plabel"
+
+  if [[ "${TX_AI_ROTATE:-1}" == 1 ]]; then
+    local m mlist
+    mlist="${TX_AI_ROTATE_MODELS//,/ }"
+    for m in $mlist; do
+      [[ -n $m ]] && _add_cand "$ptype" "$purl" "$pkey" "$m" "${plabel:-primary}"
+    done
+    while IFS= read -r m; do
+      [[ -n $m ]] && _add_cand "$ptype" "$purl" "$pkey" "$m" "${plabel:-primary}"
+    done < <(_tx_ai_default_rotate_models "$ptype" "$purl")
+
+    local rdir rf rname
+    rdir="$(_tx_ai_route_dir)"
+    if [[ -d "$rdir" ]]; then
+      for rf in "$rdir"/*.conf; do
+        [[ -f "$rf" ]] || continue
+        rname="$(basename "$rf" .conf)"
+        local TX_RT_TYPE="" TX_RT_URL="" TX_RT_KEY="" TX_RT_MODEL=""
+        . "$rf"
+        [[ "$TX_RT_TYPE" != "ollama" && -z "$TX_RT_KEY" ]] && continue
+        _add_cand "$TX_RT_TYPE" "$TX_RT_URL" "$TX_RT_KEY" "$TX_RT_MODEL" "$rname"
+        while IFS= read -r m; do
+          [[ -n $m ]] && _add_cand "$TX_RT_TYPE" "$TX_RT_URL" "$TX_RT_KEY" "$m" "$rname"
+        done < <(_tx_ai_default_rotate_models "$TX_RT_TYPE" "$TX_RT_URL")
+      done
+    fi
+  fi
+
+  local row ct cu ck cm cl
+  for row in "${raw[@]}"; do
+    IFS=$'\t' read -r ct cu ck cm cl <<< "$row"
+    id=$(_tx_ai_cooldown_id "$ct" "$cu" "$ck" "$cm")
+    if _tx_ai_cooldown_active "$id"; then
+      cooled+=("$row")
+    else
+      fresh+=("$row")
+    fi
+  done
+  for row in "${fresh[@]}"; do printf '%s\n' "$row"; done
+  for row in "${cooled[@]}"; do printf '%s\n' "$row"; done
+}
+
+tx_ai_rotate() {
+  _tx_ai_load
+  local sub="${1:-status}"
+  case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: airotate | /ai rotate [subcommand]
+  airotate                    Show active model, rotation pool, cooldowns & backup routes
+  airotate on | off           Enable/disable auto model & route rotation on 429/quota/5xx
+  airotate add <m1> [m2...]   Append model(s) to custom rotation list
+  airotate set <m1,m2,...>    Set exact custom rotation list
+  airotate clear [cooldowns]  Clear custom rotation list (or only 429 cooldown cache)
+  airotate next               Switch primary model to the next model in the rotation pool
+EOF
+      return 0
+      ;;
+    on|1)
+      TX_AI_ROTATE=1; _tx_ai_save && _tx_say "model/route rotation -> ON"
+      ;;
+    off|0)
+      TX_AI_ROTATE=0; _tx_ai_save && _tx_say "model/route rotation -> OFF"
+      ;;
+    add)
+      shift
+      (( $# > 0 )) || { _tx_err "usage: airotate add <model1> [model2 ...]"; return 1; }
+      local cur="${TX_AI_ROTATE_MODELS:-}" m
+      for m in "$@"; do
+        m="${m#,}"; m="${m%,}"
+        [[ -z $m ]] && continue
+        case ",$cur," in
+          *,"$m",*) ;;
+          *) cur="${cur:+$cur,}$m" ;;
+        esac
+      done
+      TX_AI_ROTATE_MODELS="$cur"
+      TX_AI_ROTATE=1
+      _tx_ai_save && _tx_say "rotation models -> ${TX_AI_ROTATE_MODELS}"
+      ;;
+    set)
+      shift
+      (( $# > 0 )) || { _tx_err "usage: airotate set <m1,m2,...>"; return 1; }
+      local joined="$*"
+      joined="${joined// /,}"
+      while [[ "$joined" == *,,* ]]; do joined="${joined//,,/,}"; done
+      joined="${joined#,}"; joined="${joined%,}"
+      TX_AI_ROTATE_MODELS="$joined"
+      TX_AI_ROTATE=1
+      _tx_ai_save && _tx_say "rotation models -> ${TX_AI_ROTATE_MODELS:-"(auto default)"}"
+      ;;
+    clear)
+      if [[ "${2:-}" == cooldown* ]]; then
+        rm -f "$TX_HOME/.rotate_cooldown"
+        _tx_say "cleared model rotation cooldowns"
+      else
+        TX_AI_ROTATE_MODELS=""
+        rm -f "$TX_HOME/.rotate_cooldown"
+        _tx_ai_save && _tx_say "cleared custom rotation list & cooldowns"
+      fi
+      ;;
+    next)
+      _tx_ai_is_configured || { _tx_err "configure /ai first"; return 1; }
+      local -a pool=()
+      local row ct cu ck cm cl
+      while IFS= read -r row; do
+        [[ -n $row ]] && pool+=("$row")
+      done < <(_tx_ai_build_candidates "$TX_AI_TYPE" "$TX_AI_BASE_URL" "$TX_AI_API_KEY" "$TX_AI_MODEL" "${TX_AI_ROUTE:-primary}")
+      if (( ${#pool[@]} <= 1 )); then
+        _tx_warn "only 1 model available in pool; add models with: airotate add <model>"
+        return 1
+      fi
+      local i picked="${pool[1]}"
+      for ((i=0; i<${#pool[@]}; i++)); do
+        IFS=$'\t' read -r ct cu ck cm cl <<< "${pool[i]}"
+        if [[ "$cm" == "$TX_AI_MODEL" && "$ct" == "$TX_AI_TYPE" ]]; then
+          picked="${pool[(i + 1) % ${#pool[@]}]}"
+          break
+        fi
+      done
+      IFS=$'\t' read -r ct cu ck cm cl <<< "$picked"
+      TX_AI_TYPE="$ct"; TX_AI_BASE_URL="$cu"; TX_AI_API_KEY="$ck"; TX_AI_MODEL="$cm"
+      [[ -n $cl && "$cl" != primary ]] && TX_AI_ROUTE="$cl"
+      _tx_ai_save && _tx_say "rotated primary -> ${TX_AI_MODEL} (${TX_AI_TYPE}${cl:+ | route:$cl})"
+      ;;
+    status|list|show|"")
+      printf '\n%s=== AI MODEL & ROUTE ROTATION ===%s\n' "$TX_C2" "$TX_CX"
+      printf '%sAuto-Rotate :%s %s\n' "$TX_CA" "$TX_CX" "$([[ ${TX_AI_ROTATE:-1} == 1 ]] && echo on || echo off)"
+      printf '%sPrimary     :%s %s (%s)\n' "$TX_CA" "$TX_CX" "${TX_AI_MODEL:-unset}" "${TX_AI_TYPE:-unset}"
+      printf '%sCustom List :%s %s\n' "$TX_CA" "$TX_CX" "${TX_AI_ROTATE_MODELS:-"(none — using provider defaults + routes)"}"
+      if [[ -n ${TX_AI_TYPE:-} ]]; then
+        printf '\n%sRotation Order:%s\n' "$TX_CA" "$TX_CX"
+        local row ct cu ck cm cl idx=1 cd_tag id
+        while IFS= read -r row; do
+          [[ -n $row ]] || continue
+          IFS=$'\t' read -r ct cu ck cm cl <<< "$row"
+          id=$(_tx_ai_cooldown_id "$ct" "$cu" "$ck" "$cm")
+          cd_tag=""
+          _tx_ai_cooldown_active "$id" && cd_tag=" [cooldown]"
+          printf '  [%d] %-28s (%s | %s)%s\n' "$idx" "$cm" "$ct" "${cl:-primary}" "$cd_tag"
+          (( idx++ ))
+        done < <(_tx_ai_build_candidates "$TX_AI_TYPE" "$TX_AI_BASE_URL" "$TX_AI_API_KEY" "$TX_AI_MODEL" "${TX_AI_ROUTE:-primary}")
+      fi
+      echo
+      ;;
+    *)
+      _tx_err "unknown subcommand '$sub'. Run: airotate --help"
+      return 1
+      ;;
+  esac
+}
+
+_tx_ai_call_once() {
+  # args: tmp sys tok_num temp_num ctype curl ckey cmodel msgs...
+  # On success: prints reply to stdout, returns 0.
+  # On error: writes "$tmp/last_code" and "$tmp/last_err", returns 1.
+  local tmp="$1" sys="$2" tok_num="$3" temp_num="$4" ctype="$5" curl="$6" ckey="$7" cmodel="$8"
+  shift 8
+  local -a msgs=("$@")
+  local esys endpoint="" hdr_file="$tmp/curl.cfg" body_file="$tmp/body.json" resp_file="$tmp/resp.json"
+  local _tok="$tok_num"
+  if [[ "$ctype" == "gemini" || "${_TX_AI_HINT_MODE:-}" == "code" ]] && (( _tok < 8192 )); then
+    _tok=8192
+  fi
+  esys=$(printf '%s' "$sys" | _tx_json_escape)
+  local i role emsg msg_json=""
+  case "$ctype" in
+    openai|ollama)
+      [[ -n $esys ]] && msg_json="{\"role\":\"system\",\"content\":\"$esys\"}"
+      for ((i=0; i<${#msgs[@]}; i+=2)); do
+        role="${msgs[i]}"
+        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
+        msg_json+="${msg_json:+,}{\"role\":\"${role}\",\"content\":\"${emsg}\"}"
+      done
+      if [[ "$ctype" == "openai" ]]; then
+        endpoint="${curl%/}"
+        [[ "$endpoint" == */chat/completions ]] || endpoint="${endpoint}/chat/completions"
+        printf '{"model":"%s","messages":[%s],"temperature":%s,"max_tokens":%s}' \
+          "$(printf '%s' "$cmodel" | _tx_json_escape)" "$msg_json" "$temp_num" "$_tok" > "$body_file"
+      else
+        endpoint="${curl%/}"
+        [[ "$endpoint" == */api/chat ]] || endpoint="${endpoint}/api/chat"
+        printf '{"model":"%s","messages":[%s],"stream":false,"options":{"temperature":%s,"num_predict":%s}}' \
+          "$(printf '%s' "$cmodel" | _tx_json_escape)" "$msg_json" "$temp_num" "$_tok" > "$body_file"
+      fi
+      ;;
+    gemini)
+      endpoint="${curl%/}"
+      [[ "$endpoint" == *:generateContent ]] || endpoint="${endpoint}/models/${cmodel}:generateContent"
+      local contents="" grole
+      for ((i=0; i<${#msgs[@]}; i+=2)); do
+        role="${msgs[i]}"
+        grole="user"; [[ "$role" == "assistant" ]] && grole="model"
+        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
+        contents+="${contents:+,}{\"role\":\"${grole}\",\"parts\":[{\"text\":\"${emsg}\"}]}"
+      done
+      if [[ -n $esys ]]; then
+        printf '{"system_instruction":{"parts":[{"text":"%s"}]},"contents":[%s],"generationConfig":{"temperature":%s,"maxOutputTokens":%s}}' \
+          "$esys" "$contents" "$temp_num" "$_tok" > "$body_file"
+      else
+        printf '{"contents":[%s],"generationConfig":{"temperature":%s,"maxOutputTokens":%s}}' \
+          "$contents" "$temp_num" "$_tok" > "$body_file"
+      fi
+      ;;
+    anthropic)
+      endpoint="${curl%/}"
+      [[ "$endpoint" == */messages ]] || endpoint="${endpoint}/messages"
+      for ((i=0; i<${#msgs[@]}; i+=2)); do
+        role="${msgs[i]}"
+        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
+        msg_json+="${msg_json:+,}{\"role\":\"${role}\",\"content\":\"${emsg}\"}"
+      done
+      if [[ -n $esys ]]; then
+        printf '{"model":"%s","max_tokens":%s,"temperature":%s,"system":"%s","messages":[%s]}' \
+          "$(printf '%s' "$cmodel" | _tx_json_escape)" "$_tok" "$temp_num" "$esys" "$msg_json" > "$body_file"
+      else
+        printf '{"model":"%s","max_tokens":%s,"temperature":%s,"messages":[%s]}' \
+          "$(printf '%s' "$cmodel" | _tx_json_escape)" "$_tok" "$temp_num" "$msg_json" > "$body_file"
+      fi
+      ;;
+    *)
+      printf '000' > "$tmp/last_code"
+      printf 'unsupported AI type: %s' "$ctype" > "$tmp/last_err"
+      return 1
+      ;;
+  esac
+
+  local http_code=""
+  if command -v curl >/dev/null 2>&1; then
+    {
+      echo 'header = "Content-Type: application/json"'
+      case "$ctype" in
+        openai|ollama) [[ -n $ckey ]] && printf 'header = "Authorization: Bearer %s"\n' "$ckey" ;;
+        gemini)        printf 'header = "x-goog-api-key: %s"\n' "$ckey" ;;
+        anthropic)
+          printf 'header = "x-api-key: %s"\n' "$ckey"
+          echo 'header = "anthropic-version: 2023-06-01"' ;;
+      esac
+    } > "$hdr_file"
+    http_code=$(curl -sS -K "$hdr_file" -o "$resp_file" -w '%{http_code}' \
+      --max-time "${TX_AI_TIMEOUT:-45}" -X POST -d @"$body_file" "$endpoint" 2>"$tmp/err.txt") || {
+      printf '000' > "$tmp/last_code"
+      printf 'request failed: %s' "$(cat "$tmp/err.txt" 2>/dev/null)" > "$tmp/last_err"
+      return 1
+    }
+  elif command -v wget >/dev/null 2>&1; then
+    local -a whdrs=(--header="Content-Type: application/json")
+    case "$ctype" in
+      openai|ollama) [[ -n $ckey ]] && whdrs+=(--header="Authorization: Bearer ${ckey}") ;;
+      gemini)        whdrs+=(--header="x-goog-api-key: ${ckey}") ;;
+      anthropic)     whdrs+=(--header="x-api-key: ${ckey}" --header="anthropic-version: 2023-06-01") ;;
+    esac
+    wget -qO "$resp_file" -T "${TX_AI_TIMEOUT:-45}" "${whdrs[@]}" --post-file="$body_file" "$endpoint" 2>"$tmp/err.txt" || {
+      printf '000' > "$tmp/last_code"
+      printf 'request failed: %s' "$(cat "$tmp/err.txt" 2>/dev/null)" > "$tmp/last_err"
+      return 1
+    }
+    http_code="200"
+  else
+    printf '000' > "$tmp/last_code"
+    printf 'curl or wget is required for /ai' > "$tmp/last_err"
+    return 1
+  fi
+
+  local parsed rc=0
+  parsed=$(_tx_ai_parse_reply "$ctype" "$resp_file") || rc=$?
+  if (( rc != 0 )) || [[ "$parsed" == ERROR:* ]]; then
+    printf '%s' "${http_code:-?}" > "$tmp/last_code"
+    printf 'HTTP %s: %s' "${http_code:-?}" "${parsed#ERROR: }" > "$tmp/last_err"
+    return 1
+  fi
+  if _tx_is_int "$http_code" && (( http_code >= 400 )); then
+    printf '%s' "$http_code" > "$tmp/last_code"
+    printf 'HTTP %s: %s' "$http_code" "$parsed" > "$tmp/last_err"
+    return 1
+  fi
+  printf '%s\n' "$parsed"
 }
 
 _tx_ai_call() {
@@ -3038,124 +3401,61 @@ _tx_ai_call() {
   ( umask 077 && mkdir -p "$tmp" ) || { _tx_err "cannot create temp dir"; return 1; }
   trap 'rm -rf "$tmp"' RETURN
 
-  local esys endpoint="" hdr_file="$tmp/curl.cfg" body_file="$tmp/body.json" resp_file="$tmp/resp.json"
-  esys=$(printf '%s' "$sys" | _tx_json_escape)
   local temp_num="${TX_AI_TEMP:-0.7}"
   local tok_num="${TX_AI_MAX_TOKENS:-8192}"
   _tx_is_int "$tok_num" || tok_num=8192
-  # Prevent Gemini 2.5 thinking tokens or code generation from truncating
-  if [[ "$TX_AI_TYPE" == "gemini" || "${_TX_AI_HINT_MODE:-}" == "code" ]] && (( tok_num < 8192 )); then
-    tok_num=8192
-  fi
 
-  local i role emsg msg_json=""
-  case "$TX_AI_TYPE" in
-    openai|ollama)
-      [[ -n $esys ]] && msg_json="{\"role\":\"system\",\"content\":\"$esys\"}"
-      for ((i=0; i<${#msgs[@]}; i+=2)); do
-        role="${msgs[i]}"
-        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
-        msg_json+="${msg_json:+,}{\"role\":\"${role}\",\"content\":\"${emsg}\"}"
-      done
-      if [[ "$TX_AI_TYPE" == "openai" ]]; then
-        endpoint="${TX_AI_BASE_URL%/}"
-        [[ "$endpoint" == */chat/completions ]] || endpoint="${endpoint}/chat/completions"
-        printf '{"model":"%s","messages":[%s],"temperature":%s,"max_tokens":%s}' \
-          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$msg_json" "$temp_num" "$tok_num" > "$body_file"
-      else
-        endpoint="${TX_AI_BASE_URL%/}"
-        [[ "$endpoint" == */api/chat ]] || endpoint="${endpoint}/api/chat"
-        printf '{"model":"%s","messages":[%s],"stream":false,"options":{"temperature":%s,"num_predict":%s}}' \
-          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$msg_json" "$temp_num" "$tok_num" > "$body_file"
-      fi
-      ;;
-    gemini)
-      endpoint="${TX_AI_BASE_URL%/}"
-      [[ "$endpoint" == *:generateContent ]] || endpoint="${endpoint}/models/${TX_AI_MODEL}:generateContent"
-      local contents="" grole
-      for ((i=0; i<${#msgs[@]}; i+=2)); do
-        role="${msgs[i]}"
-        grole="user"; [[ "$role" == "assistant" ]] && grole="model"
-        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
-        contents+="${contents:+,}{\"role\":\"${grole}\",\"parts\":[{\"text\":\"${emsg}\"}]}"
-      done
-      if [[ -n $esys ]]; then
-        printf '{"system_instruction":{"parts":[{"text":"%s"}]},"contents":[%s],"generationConfig":{"temperature":%s,"maxOutputTokens":%s}}' \
-          "$esys" "$contents" "$temp_num" "$tok_num" > "$body_file"
-      else
-        printf '{"contents":[%s],"generationConfig":{"temperature":%s,"maxOutputTokens":%s}}' \
-          "$contents" "$temp_num" "$tok_num" > "$body_file"
-      fi
-      ;;
-    anthropic)
-      endpoint="${TX_AI_BASE_URL%/}"
-      [[ "$endpoint" == */messages ]] || endpoint="${endpoint}/messages"
-      for ((i=0; i<${#msgs[@]}; i+=2)); do
-        role="${msgs[i]}"
-        emsg=$(printf '%s' "${msgs[i+1]}" | _tx_json_escape)
-        msg_json+="${msg_json:+,}{\"role\":\"${role}\",\"content\":\"${emsg}\"}"
-      done
-      if [[ -n $esys ]]; then
-        printf '{"model":"%s","max_tokens":%s,"temperature":%s,"system":"%s","messages":[%s]}' \
-          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$tok_num" "$temp_num" "$esys" "$msg_json" > "$body_file"
-      else
-        printf '{"model":"%s","max_tokens":%s,"temperature":%s,"messages":[%s]}' \
-          "$(printf '%s' "$TX_AI_MODEL" | _tx_json_escape)" "$tok_num" "$temp_num" "$msg_json" > "$body_file"
-      fi
-      ;;
-    *)
-      _tx_err "unsupported AI type: $TX_AI_TYPE"
-      return 1
-      ;;
-  esac
+  local -a cands=()
+  local row
+  while IFS= read -r row; do
+    [[ -n $row ]] && cands+=("$row")
+  done < <(_tx_ai_build_candidates "$TX_AI_TYPE" "$TX_AI_BASE_URL" "$TX_AI_API_KEY" "$TX_AI_MODEL" "${_routed:-${TX_AI_ROUTE:-primary}}")
 
-  local http_code=""
-  if command -v curl >/dev/null 2>&1; then
-    {
-      echo 'header = "Content-Type: application/json"'
-      case "$TX_AI_TYPE" in
-        openai|ollama)
-          [[ -n $TX_AI_API_KEY ]] && printf 'header = "Authorization: Bearer %s"\n' "$TX_AI_API_KEY" ;;
-        gemini)
-          printf 'header = "x-goog-api-key: %s"\n' "$TX_AI_API_KEY" ;;
-        anthropic)
-          printf 'header = "x-api-key: %s"\n' "$TX_AI_API_KEY"
-          echo 'header = "anthropic-version: 2023-06-01"' ;;
-      esac
-    } > "$hdr_file"
-    http_code=$(curl -sS -K "$hdr_file" -o "$resp_file" -w '%{http_code}' \
-      --max-time "${TX_AI_TIMEOUT:-45}" -X POST -d @"$body_file" "$endpoint" 2>"$tmp/err.txt") || {
-      _tx_err "request failed: $(cat "$tmp/err.txt" 2>/dev/null)"
-      return 1
-    }
-  elif command -v wget >/dev/null 2>&1; then
-    local -a whdrs=(--header="Content-Type: application/json")
-    case "$TX_AI_TYPE" in
-      openai|ollama) [[ -n $TX_AI_API_KEY ]] && whdrs+=(--header="Authorization: Bearer ${TX_AI_API_KEY}") ;;
-      gemini)        whdrs+=(--header="x-goog-api-key: ${TX_AI_API_KEY}") ;;
-      anthropic)     whdrs+=(--header="x-api-key: ${TX_AI_API_KEY}" --header="anthropic-version: 2023-06-01") ;;
-    esac
-    wget -qO "$resp_file" -T "${TX_AI_TIMEOUT:-45}" "${whdrs[@]}" --post-file="$body_file" "$endpoint" 2>"$tmp/err.txt" || {
-      _tx_err "request failed: $(cat "$tmp/err.txt" 2>/dev/null)"
-      return 1
-    }
-    http_code="200"
-  else
-    _tx_err "curl or wget is required for /ai"
-    return 1
-  fi
+  local idx total=${#cands[@]} ct cu ck cm cl out last_code="" last_err="" first_model="$TX_AI_MODEL" first_key="$TX_AI_API_KEY" rotated=0
+  for ((idx=0; idx<total; idx++)); do
+    IFS=$'\t' read -r ct cu ck cm cl <<< "${cands[idx]}"
+    if out=$(_tx_ai_call_once "$tmp" "$sys" "$tok_num" "$temp_num" "$ct" "$cu" "$ck" "$cm" "${msgs[@]}"); then
+      if (( rotated )) || [[ "$cm" != "$first_model" ]]; then
+        printf '%s[*]%s rotated to %s (%s)\n' "$TX_C2" "$TX_CX" "$cm" "${cl:-$ct}" >&2
+      fi
+      printf '%s\n' "$out"
+      return 0
+    fi
+    last_code=$(cat "$tmp/last_code" 2>/dev/null || echo "")
+    last_err=$(cat "$tmp/last_err" 2>/dev/null || echo "request failed")
 
-  local parsed rc=0
-  parsed=$(_tx_ai_parse_reply "$TX_AI_TYPE" "$resp_file") || rc=$?
-  if (( rc != 0 )) || [[ "$parsed" == ERROR:* ]]; then
-    _tx_err "HTTP ${http_code:-?}: ${parsed#ERROR: }"
-    return 1
-  fi
-  if _tx_is_int "$http_code" && (( http_code >= 400 )); then
-    _tx_err "HTTP ${http_code}: $parsed"
-    return 1
-  fi
-  printf '%s\n' "$parsed"
+    if [[ "${TX_AI_ROTATE:-1}" != 1 ]] || (( idx + 1 >= total )); then
+      break
+    fi
+
+    # Check if next candidate shares the exact same key on a non-rotatable auth error
+    local next_ct next_cu next_ck next_cm next_cl
+    if ! _tx_ai_is_rotatable_err "$last_code" "$last_err"; then
+      # Allow jumping to a different key/route on 401/403; skip same-key model switches
+      if [[ "$last_code" == 401 || "$last_code" == 403 ]]; then
+        while (( idx + 1 < total )); do
+          IFS=$'\t' read -r next_ct next_cu next_ck next_cm next_cl <<< "${cands[idx+1]}"
+          if [[ "$next_ck" != "$ck" || "$next_cu" != "$cu" ]]; then
+            break
+          fi
+          (( idx++ ))
+        done
+        if (( idx + 1 >= total )); then break; fi
+      else
+        break
+      fi
+    else
+      local cd_secs=600
+      [[ "$last_code" == 5* ]] && cd_secs=120
+      _tx_ai_cooldown_mark "$(_tx_ai_cooldown_id "$ct" "$cu" "$ck" "$cm")" "$cd_secs"
+    fi
+
+    rotated=1
+    printf '%s[!]%s HTTP %s on %s — rotating model...\n' "$TX_CY" "$TX_CX" "${last_code:-?}" "$cm" >&2
+  done
+
+  _tx_err "${last_err:-AI request failed}"
+  return 1
 }
 
 # =====================================================================
@@ -3168,9 +3468,15 @@ _tx_ai_is_dangerous() {
   return 1
 }
 
+_tx_ai_has_placeholder() {
+  local cmd="$1"
+  [[ "$cmd" =~ (^|[[:space:]=/\'\"])\<[A-Za-z][A-Za-z0-9_.-]{1,40}\>($|[[:space:]/\'\"\;\|&]) ]]
+}
+
 _tx_ai_should_auto() {
   # args: kind (write|cmd), detail
   local kind="$1" detail="${2:-}"
+  [[ "$kind" == "cmd" ]] && _tx_ai_has_placeholder "$detail" && return 1
   local mode="${_TX_AI_FORCE_AUTO:-${TX_AI_AUTO:-off}}"
   case "$mode" in
     on|1|true|yolo) return 0 ;;
@@ -3616,6 +3922,21 @@ _tx_ai_run_clean() {
 _tx_ai_exec_with_autofix() {
   local cmd="$1"
   [[ -n $cmd ]] || return 1
+  if _tx_ai_has_placeholder "$cmd"; then
+    _tx_warn "command contains placeholder (<...>) — fill it in before running:"
+    if [[ -t 0 && -t 1 ]]; then
+      printf '%sEdit cmd: %s' "$TX_CA" "$TX_CX"
+      read -r -e -i "$cmd" cmd </dev/tty 2>/dev/null || read -r cmd </dev/tty
+      [[ -z $cmd ]] && return 0
+      if _tx_ai_has_placeholder "$cmd"; then
+        _tx_err "still contains unresolved <placeholder>; aborted"
+        return 2
+      fi
+    else
+      _tx_err "refusing to execute unresolved <placeholder> command: $cmd"
+      return 2
+    fi
+  fi
   local logf="$TX_HOME/.airun.$$" ec=0
   _tx_ai_run_clean "$cmd" "$logf"
   ec=$?
@@ -4252,6 +4573,11 @@ _tx_ai_chat() {
         _tx_ai_load
         continue
         ;;
+      /rotate|/rotate\ *)
+        tx_ai_rotate ${line#/rotate}
+        _tx_ai_load
+        continue
+        ;;
       /remember\ *)
         _tx_ai_mem_add "${line#/remember }"
         continue
@@ -4409,6 +4735,7 @@ Usage: /ai [-y] [option | prompt]
   /ai diff | commit | project Git diff review, commit message gen, codebase scan
   /ai err <command>           Run command and auto-diagnose/fix failures
   /ai route [...]             Multi-provider routes & auto-routing (also: airoute)
+  /ai rotate [...]            Auto-rotate models & routes on 429/quota (also: airotate)
   /ai mood <mode>             Set mood: fast | coder | teacher | strict | friendly
   /ai mem [...]               AGY-style persistent memory store (also: aimem)
   /ai remember <fact>         Save fact to memory (also: /remember <fact>)
@@ -4466,6 +4793,11 @@ EOF
       tx_ai_route "$@"
       return $?
       ;;
+    rotate|models)
+      shift
+      tx_ai_rotate "$@"
+      return $?
+      ;;
     mood)
       shift
       tx_ai_mood "$@"
@@ -4483,7 +4815,7 @@ EOF
       ;;
     set)
       local k="${2:-}"
-      [[ -n $k && $# -ge 3 ]] || { _tx_err "usage: /ai set <type|base_url|api_key|model|system|temp|max_tokens|timeout> <value>"; return 1; }
+      [[ -n $k && $# -ge 3 ]] || { _tx_err "usage: /ai set <type|base_url|api_key|model|system|temp|max_tokens|timeout|rotate|rotate_models> <value>"; return 1; }
       shift 2
       local v="$*"
       case "$k" in
@@ -4500,6 +4832,14 @@ EOF
         temp|temperature) TX_AI_TEMP="$v" ;;
         max_tokens|tokens) TX_AI_MAX_TOKENS="$v" ;;
         timeout)          TX_AI_TIMEOUT="$v" ;;
+        rotate)
+          case "$v" in
+            on|1|true)  TX_AI_ROTATE=1 ;;
+            off|0|false) TX_AI_ROTATE=0 ;;
+            *) _tx_err "rotate must be on or off"; return 1 ;;
+          esac
+          ;;
+        rotate_models|models) TX_AI_ROTATE_MODELS="${v// /,}" ;;
         *) _tx_err "unknown key '$k'"; return 1 ;;
       esac
       _tx_ai_save && _tx_say "/ai ${k} saved"
@@ -4810,21 +5150,23 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route mood mem remember compact full config setup status show test set reset -y -c cmd --help"
+        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route rotate models mood mem remember compact full config setup status show test set reset -y -c cmd --help"
       elif [[ "$prev" == auto ]]; then
         words="off safe on status"
       elif [[ "$prev" == compact ]]; then
         words="on off"
+      elif [[ "$prev" == rotate || "$prev" == models ]]; then
+        words="status on off add set clear next"
       elif [[ "$prev" == skill || "$prev" == skills ]]; then
         words="list install create show use off remove auto"
       elif [[ "$prev" == set ]]; then
-        words="type base_url api_key model system temp max_tokens timeout"
+        words="type base_url api_key model system temp max_tokens timeout rotate rotate_models"
       elif [[ "$prev" == type ]]; then
         words="openai gemini anthropic ollama"
       elif [[ "$prev" == mood ]]; then
         words="fast coder teacher strict friendly list"
       elif [[ "$prev" == route ]]; then
-        words="list add save use del mood auto"
+        words="list add save use del mood auto rotate"
       elif [[ "$prev" == mem ]]; then
         words="list add project topic search del forget edit clear auto"
       fi
@@ -4843,12 +5185,15 @@ _tx_subcmd_complete() {
       ;;
     airoute)
       if (( COMP_CWORD == 1 )); then
-        words="list add save use del mood auto"
+        words="list add save use del mood auto rotate"
       elif [[ "$prev" == mood ]]; then
         words="fast coder teacher strict friendly list"
       elif [[ "$prev" == auto ]]; then
         words="on off"
       fi
+      ;;
+    airotate|aimodels)
+      (( COMP_CWORD == 1 )) && words="status on off add set clear next"
       ;;
     aimem)
       if (( COMP_CWORD == 1 )); then
@@ -4907,7 +5252,7 @@ _tx_register_complete() {
     ln vim nano vi nvim find grep rg tar zip unzip scp rsync \
     ssh python python3 py py3 node npm extract backup diskinfo serve 2>/dev/null || true
   complete -o bashdefault -o default -F _tx_subcmd_complete \
-    txtheme txconfig sfetch Sfetch svc txwake txcompact dns txclean sysup txlog txssh txcron /ai ai txai airoute aimem aiskill 2>/dev/null || true
+    txtheme txconfig sfetch Sfetch svc txwake txcompact dns txclean sysup txlog txssh txcron /ai ai txai airoute airotate aimodels aimem aiskill 2>/dev/null || true
 }
 _tx_register_complete
 
@@ -4959,6 +5304,8 @@ ai()          { tx_ai "$@"; }
 txai()        { tx_ai "$@"; }
 txagent()     { tx_ai cli "$@"; }
 airoute()     { tx_ai_route "$@"; }
+airotate()    { tx_ai_rotate "$@"; }
+aimodels()    { tx_ai_rotate "$@"; }
 aimem()       { tx_ai_mem "$@"; }
 aiskill()     { tx_ai_skill "$@"; }
 txfull()      { _tx_ai_show_full "$@"; }
@@ -5140,6 +5487,7 @@ else
     ai|/ai|txai)   tx_ai "$@" ;;
     txagent|cli)   tx_ai cli "$@" ;;
     airoute|route) tx_ai_route "$@" ;;
+    airotate|aimodels|rotate) tx_ai_rotate "$@" ;;
     aimem|mem)     tx_ai_mem "$@" ;;
     aiskill|skill) tx_ai_skill "$@" ;;
     remember|/remember) _tx_ai_mem_add "$@" ;;
