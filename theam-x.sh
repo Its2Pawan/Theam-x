@@ -3,18 +3,10 @@
 #  THEAM-X  |  hacker terminal theme for VPS + Termux
 #  by Its2Pawan  -  https://github.com/Its2Pawan/Theam-x
 #  Copyright (c) 2026 Its2Pawan. All Rights Reserved.
-#
-#  Commands (after install):
-#     sfetch    system info (also: Sfetch)
-#     dev       developer info
-#     hv        live monitor (q = quit)
-#     hvboot    replay boot screen
-#     matrix    full-screen 0/1 rain (any key = exit)
-#     txver     show version / check for updates
-#     txupdate  update now from GitHub
-#
-#  Config file:  ~/.sino/config   (TX_AUTOUPDATE=0 turns auto update off)
 # =====================================================================
+
+# force real bash even if launched with sh/dash
+[ -n "$BASH_VERSION" ] || exec bash "$0" "$@"
 
 HV_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 TX_HOME="${TX_HOME:-$HOME/.sino}"
@@ -42,10 +34,10 @@ fi
 read -ra HV_SERVICES <<< "$HV_SERVICES_STR"
 
 # ---------------------------------------------------------------------
-#  basics
+#  basics  (ESC = octal \033 — works on every bash)
 # ---------------------------------------------------------------------
 hv_init() {
-  E=$'\e'; X="${E}[0m"
+  E=$'\033'; X="${E}[0m"
   G="${E}[0;40;32m"; DIM="${E}[2;40;32m"; BR="${E}[1;40;92m"
   W="${E}[1;40;97m"; Y="${E}[1;40;93m"; R="${E}[1;40;91m"; C="${E}[1;40;96m"
   IN_ALT=0
@@ -97,7 +89,6 @@ hv_screen() {
   P_LEFT=99999; P_TOP=99999; PH=0
 }
 
-# returns 0 only when the window size changed (caller then rebuilds the panel)
 hv_check_resize() {
   (( RESIZED )) || return 1
   RESIZED=0
@@ -117,7 +108,7 @@ hv_geometry() {
 # ---------------------------------------------------------------------
 #  rain (0/1) - skips the panel area
 # ---------------------------------------------------------------------
-hv_put() { # row col color char
+hv_put() {
   (( $1 < 1 || $1 > ROWS )) && return
   (( PH > 0 && $1 >= P_TOP && $1 < P_TOP + PH && $2 >= P_LEFT && $2 < P_LEFT + PW )) && return
   BUF+="${E}[$1;$2H$3$4"
@@ -140,15 +131,15 @@ hv_rain_frame() {
 }
 
 # ---------------------------------------------------------------------
-#  panel helpers (every LINES entry is exactly INNER chars wide)
+#  panel helpers
 # ---------------------------------------------------------------------
-hv_ln() { # colored_text plain_length
+hv_ln() {
   local pad=$(( INNER - $2 )) sp; (( pad < 0 )) && pad=0
   printf -v sp '%*s' "$pad" ''
   LINES+=("$1$sp")
 }
 
-hv_center() { # color text
+hv_center() {
   local t="${2:0:$INNER}" lp rp s1 s2
   lp=$(( (INNER - ${#t}) / 2 )); (( lp < 0 )) && lp=0
   rp=$(( INNER - ${#t} - lp )); (( rp < 0 )) && rp=0
@@ -156,14 +147,14 @@ hv_center() { # color text
   LINES+=("${1}${s1}${t}${s2}")
 }
 
-hv_kv() { # label value
+hv_kv() {
   local avail=$(( INNER - 12 )); (( avail < 1 )) && avail=1
   local v="${2:0:$avail}" lab
   printf -v lab '%-9s' "$1"
   hv_ln " ${DIM}${lab} ${W}${v}" $(( 11 + ${#v} ))
 }
 
-hv_barline() { # label pct extra
+hv_barline() {
   local p=$2 col bw=$(( INNER - 27 )) fill f e ex lab
   (( bw < 4 )) && bw=4
   (( p > 100 )) && p=100; (( p < 0 )) && p=0
@@ -205,7 +196,7 @@ hv_draw_panel() {
 }
 
 # ---------------------------------------------------------------------
-#  system stats (pure bash / /proc, works on any Linux VPS)
+#  system stats
 # ---------------------------------------------------------------------
 hv_rate() {
   local b=$1
@@ -319,7 +310,7 @@ hv_stats_slow() {
 }
 
 # ---------------------------------------------------------------------
-#  LIVE MONITOR  (hv)
+#  LIVE MONITOR
 # ---------------------------------------------------------------------
 hv_build_dash() {
   LINES=()
@@ -369,7 +360,7 @@ hv_dash() {
 }
 
 # ---------------------------------------------------------------------
-#  BOOT SCREEN  (real info, typed out)
+#  BOOT SCREEN
 # ---------------------------------------------------------------------
 hv_build_boot() {
   LINES=()
@@ -450,7 +441,7 @@ hv_boot() {
 }
 
 # ---------------------------------------------------------------------
-#  MATRIX (rain only)
+#  MATRIX
 # ---------------------------------------------------------------------
 hv_matrix() {
   hv_init
@@ -466,9 +457,9 @@ hv_matrix() {
 }
 
 # ---------------------------------------------------------------------
-#  version + auto update (GitHub)
+#  version + auto update
 # ---------------------------------------------------------------------
-tx_get() { # url
+tx_get() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time "${TX_TIMEOUT:-8}" "$1"
   elif command -v wget >/dev/null 2>&1; then wget -qO- -T "${TX_TIMEOUT:-8}" "$1"
   else return 127; fi
@@ -483,7 +474,6 @@ tx_local_ver() {
   printf '0.0.0'
 }
 
-# true if $1 is a newer version than $2
 tx_ver_gt() {
   local IFS=.
   local -a a=($1) b=($2)
@@ -495,7 +485,6 @@ tx_ver_gt() {
   return 1
 }
 
-# prints "<version> <branch>"
 tx_remote_ver() {
   local b v
   for b in "$TX_BRANCH" master; do
@@ -505,15 +494,15 @@ tx_remote_ver() {
   return 1
 }
 
-tx_update() { # 0 = verbose, 1 = quiet (background)
+tx_update() {
   local quiet=${1:-0} lv out rv rb base tmp
   lv=$(tx_local_ver)
-  out=$(tx_remote_ver) || { (( quiet )) || echo -e "\e[1;91m[x]\e[0m can't reach GitHub (offline, or repo files not found)"; return 1; }
+  out=$(tx_remote_ver) || { (( quiet )) || printf '\033[1;91m[x]\033[0m can'"'"'t reach GitHub (offline, or repo files not found)\n'; return 1; }
   read -r rv rb <<< "$out"
   if ! tx_ver_gt "$rv" "$lv"; then
-    (( quiet )) || echo -e "\e[1;92m[+]\e[0m up to date  (v${lv})"; return 0
+    (( quiet )) || printf '\033[1;92m[+]\033[0m up to date  (v%s)\n' "$lv"; return 0
   fi
-  (( quiet )) || echo -e "\e[1;93m[*]\e[0m updating v${lv} -> v${rv} ..."
+  (( quiet )) || printf '\033[1;93m[*]\033[0m updating v%s -> v%s ...\n' "$lv" "$rv"
   base="${TX_RAW_BASE}/${TX_REPO}/${rb}"
   mkdir -p "$TX_HOME"; tmp="$TX_HOME/.tmp.$$"; mkdir -p "$tmp" || return 1
   if tx_get "$base/theam-x.sh" > "$tmp/theam-x.sh" 2>/dev/null \
@@ -525,16 +514,15 @@ tx_update() { # 0 = verbose, 1 = quiet (background)
     if (( quiet )); then
       printf 'Theam-X updated v%s -> v%s (active now in new shells)\n' "$lv" "$rv" > "$TX_HOME/notice"
     else
-      echo -e "\e[1;92m[+]\e[0m updated to v${rv}  (open a new shell or run: source ~/.bashrc)"
+      printf '\033[1;92m[+]\033[0m updated to v%s  (open a new shell or run: source ~/.bashrc)\n' "$rv"
     fi
     return 0
   fi
   rm -rf "$tmp"
-  (( quiet )) || echo -e "\e[1;91m[x]\e[0m update failed, kept v${lv}"
+  (( quiet )) || printf '\033[1;91m[x]\033[0m update failed, kept v%s\n' "$lv"
   return 1
 }
 
-# checks at most once per TX_CHECK_INTERVAL (default 24h), in the background
 tx_auto_update() {
   [[ "${TX_AUTOUPDATE:-1}" == 1 ]] || return 0
   mkdir -p "$TX_HOME" 2>/dev/null || return 0
@@ -548,21 +536,19 @@ tx_auto_update() {
 tx_version() {
   local lv out rv
   lv=$(tx_local_ver)
-  echo -e "\e[1;92mTheam-X\e[0m v${lv}  \e[0;32m(${TX_DEVICE})\e[0m"
+  printf '\033[1;92mTheam-X\033[0m v%s  \033[0;32m(%s)\033[0m\n' "$lv" "$TX_DEVICE"
   if out=$(tx_remote_ver); then
     rv=${out%% *}
-    if tx_ver_gt "$rv" "$lv"; then echo -e "\e[1;93m[!]\e[0m update available: v${rv}   (run: txupdate)"
-    else echo -e "\e[1;92m[+]\e[0m you have the latest version"; fi
+    if tx_ver_gt "$rv" "$lv"; then printf '\033[1;93m[!]\033[0m update available: v%s   (run: txupdate)\n' "$rv"
+    else printf '\033[1;92m[+]\033[0m you have the latest version\n'; fi
   else
-    echo -e "\e[1;91m[x]\e[0m can't check GitHub right now"
+    printf '\033[1;91m[x]\033[0m can'"'"'t check GitHub right now\n'
   fi
 }
 
 # ---------------------------------------------------------------------
-#  SFETCH  (system info, works on VPS + Termux)
+#  terminal width helper
 # ---------------------------------------------------------------------
-tx_bits() { local n=$1 s="" i; for ((i=1; i<=n; i++)); do s+=$(( RANDOM & 1 )); (( i % 4 == 0 && i < n )) && s+=" "; done; printf '%s' "$s"; }
-
 tx_cols() {
   local c=""
   if [[ -t 1 ]]; then c=$(tput cols 2>/dev/null); fi
@@ -570,9 +556,13 @@ tx_cols() {
   printf '%s' "$c"
 }
 
+# ---------------------------------------------------------------------
+#  SFETCH
+# ---------------------------------------------------------------------
+tx_bits() { local n=$1 s="" i; for ((i=1; i<=n; i++)); do s+=$(( RANDOM & 1 )); (( i % 4 == 0 && i < n )) && s+=" "; done; printf '%s' "$s"; }
+
 tx_sfetch() {
-  local E=$'\e' g w d x
-  g="${E}[1;92m"; w="${E}[1;97m"; d="${E}[0;32m"; x="${E}[0m"
+  local E=$'\033' g="${E}[1;92m" w="${E}[1;97m" d="${E}[0;32m" x="${E}[0m"
   local user host os model kern up pk shell term cpu mem disk ip ver virt
   user=${USER:-$(id -un 2>/dev/null)}; host=$(hostname 2>/dev/null || uname -n)
 
@@ -623,7 +613,6 @@ tx_sfetch() {
   disk="${du:-?} / ${ds:-?} (${dp:-?})"
   ip=$(hv_ip); ver=$(tx_local_ver)
 
-  # keep lines inside the terminal width
   local cols maxv _v
   cols=$(tx_cols); maxv=$(( cols - 30 )); (( maxv < 12 )) && maxv=12
   for _v in os model kern up pk shell term cpu mem disk ip; do printf -v "$_v" '%s' "${!_v:0:$maxv}"; done
@@ -633,7 +622,7 @@ tx_sfetch() {
   pal=""; for i in 0 1 2 3 4 5 6 7; do pal+="${E}[4${i}m   "; done; pal+="${x}"
 
   local -a info=(
-    "${g}${user}${w}@${g}${host}"
+    "${g}${user}${w}@${g}${host}${x}"
     "${d}${ul}${x}"
     "${g}OS       ${w}${os}${x}"
     "${g}Device   ${w}${model}${x}"
@@ -674,17 +663,17 @@ LOGOEOF
 }
 
 # ---------------------------------------------------------------------
-#  DEV  (developer info card)
+#  DEV
 # ---------------------------------------------------------------------
 tx_dev() {
-  local E=$'\e' g="${E}[1;92m" w="${E}[1;97m" d="${E}[0;32m" x="${E}[0m"
+  local E=$'\033' g="${E}[1;92m" w="${E}[1;97m" d="${E}[0;32m" x="${E}[0m"
   local cols inner hl vw
   cols=$(tx_cols)
   inner=$(( cols - 2 )); (( inner > 64 )) && inner=64; (( inner < 36 )) && inner=36
   printf -v hl '%*s' "$inner" ''; hl=${hl// /═}
   vw=$(( inner - 10 )); (( vw < 1 )) && vw=1
   local pause=0; [[ -t 1 ]] && pause=0.04
-  _row() { # label value (long values wrap onto extra rows)
+  _row() {
     local val="$2" lab="$1"
     [[ -z "$val" ]] && return
     while :; do
@@ -748,7 +737,6 @@ hv_prompt() {
 #  entry point
 # ---------------------------------------------------------------------
 if (return 0 2>/dev/null); then
-  # sourced from ~/.bashrc -> theme the shell
   if [[ $- == *i* ]]; then
     [[ "$PROMPT_COMMAND" == *hv_prompt* ]] || PROMPT_COMMAND="hv_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     if [[ -t 1 && -z "${HV_BOOTED:-}" ]]; then
@@ -756,7 +744,6 @@ if (return 0 2>/dev/null); then
       if [[ -z "${TMUX:-}" && "${HV_QUICK:-0}" != 1 ]]; then
         hv_stamp="${XDG_RUNTIME_DIR:-/tmp}/.hv_boot_${UID:-0}"
         hv_now=$(printf '%(%s)T' -1); hv_last=$(cat "$hv_stamp" 2>/dev/null || echo 0)
-        # don't replay the animation on quick reconnects (default 5 min)
         if (( hv_now - hv_last > ${HV_COOLDOWN:-300} )); then
           ( hv_boot )
           echo "$hv_now" > "$hv_stamp" 2>/dev/null
@@ -764,9 +751,9 @@ if (return 0 2>/dev/null); then
         unset hv_stamp hv_now hv_last
       fi
       if [[ -s "$TX_HOME/notice" ]]; then
-        echo -e "\e[1;93m[*]\e[0m $(cat "$TX_HOME/notice")"; rm -f "$TX_HOME/notice"
+        printf '\033[1;93m[*]\033[0m %s\n' "$(cat "$TX_HOME/notice")"; rm -f "$TX_HOME/notice"
       fi
-      echo -e "\e[1;92m[+] ready.\e[0;32m  sfetch | dev | hv | matrix | txver | txupdate\e[0m"
+      printf '\033[1;92m[+] ready.\033[0;32m  sfetch | dev | hv | matrix | txver | txupdate\033[0m\n'
       tx_auto_update
     fi
   fi
