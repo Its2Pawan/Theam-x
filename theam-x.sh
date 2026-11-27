@@ -2180,7 +2180,8 @@ STRICT RULES:
 1. Give instructions ONLY for Termux (pkg/bash/Android). NEVER mention Linux VPS, Ubuntu, Debian, CentOS, apt, or sudo unless the user explicitly asks.
 2. Always prefer 'pkg install <pkg>' first on Termux (e.g. 'pkg install cloudflared'). Only use 'curl -fsSL' if no pkg exists, and install binaries to '\$PREFIX/bin/' (never '\$HOME/bin/').
 3. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands. If required details (like package name) are missing, ask briefly WITHOUT writing fake \`<placeholder>\` bash commands.
-4. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
+4. If asked to create, make, or write a file/script, ALWAYS output \`FILE: <path>\` followed by the COMPLETE file contents inside a \`\`\` code block with closing \`\`\`.
+5. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
 EOF
   else
     command -v dnf >/dev/null 2>&1 && pkgmgr="dnf"
@@ -2191,7 +2192,8 @@ You are a fast Linux VPS (${OSNAME:-Linux} ${arch}, ${pkgmgr}) terminal copilot.
 STRICT RULES:
 1. Give instructions ONLY for this Linux VPS (${pkgmgr}). NEVER mention Termux or unrelated distros unless the user explicitly asks.
 2. Give the single best, direct answer in 1-4 short lines plus a \`\`\`bash code block of exact runnable commands. If required details (like package name) are missing, ask briefly WITHOUT writing fake \`<placeholder>\` bash commands.
-3. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
+3. If asked to create, make, or write a file/script, ALWAYS output \`FILE: <path>\` followed by the COMPLETE file contents inside a \`\`\` code block with closing \`\`\`.
+4. NEVER write long essays, horizontal dividers (---), or "Please clarify" questions.
 EOF
   fi
 }
@@ -2615,15 +2617,48 @@ _tx_ai_extract_cmds() {
   '
 }
 
+_tx_ai_clean_path() {
+  local p="$1"
+  p="${p#"${p%%[![:space:]]*}"}"
+  p="${p%"${p##*[![:space:]]}"}"
+  p="${p//\`/}"
+  p="${p#\"}" ; p="${p%\"}"
+  p="${p#\'}" ; p="${p%\'}"
+  p="${p#\*\*}" ; p="${p%%\*\*}"
+  p="${p#./}"
+  p="${p%[:,;]}"
+  printf '%s' "$p"
+}
+
+_tx_ai_guess_ext() {
+  local lang="${1,,}"
+  case "$lang" in
+    python|python3|py)     printf 'py' ;;
+    bash|sh|zsh|shell)     printf 'sh' ;;
+    javascript|js|node)    printf 'js' ;;
+    typescript|ts)         printf 'ts' ;;
+    markdown|md)           printf 'md' ;;
+    json)                  printf 'json' ;;
+    yaml|yml)              printf 'yml' ;;
+    html|htm)              printf 'html' ;;
+    css)                   printf 'css' ;;
+    go|golang)             printf 'go' ;;
+    rust|rs)               printf 'rs' ;;
+    php)                   printf 'php' ;;
+    sql)                   printf 'sql' ;;
+    *)                     printf 'sh' ;;
+  esac
+}
+
 _tx_ai_extract_code_block() {
-  # Extracts the largest code block content (including indented or unclosed blocks)
+  # Extracts the largest fenced code block (or raw body after FILE: if fences omitted), returns lang tag via stderr optional unused
   awk '
     {
       t = $0
       sub(/^[[:space:]]+/, "", t)
     }
     t ~ /^```/ {
-      if (!in_blk) { in_blk = 1; cur = "" }
+      if (!in_blk) { in_blk = 1; cur = ""; saw_fence = 1 }
       else {
         in_blk = 0
         if (length(cur) > length(best)) best = cur
@@ -2631,9 +2666,76 @@ _tx_ai_extract_code_block() {
       next
     }
     in_blk { cur = cur $0 "\n" }
+    !saw_fence {
+      if (after_file) raw = raw $0 "\n"
+      if (t ~ /^(#*[[:space:]]*)?\*{0,2}(FILE|FILENAME|File|Path)\*{0,2}:?\*{0,2}[[:space:]]+/) after_file = 1
+    }
     END {
       if (in_blk && length(cur) > length(best)) best = cur
-      printf "%s", best
+      if (length(best) > 0) printf "%s", best
+      else if (length(raw) > 0) printf "%s", raw
+    }
+  '
+}
+
+_tx_ai_extract_files() {
+  # Args: reply_text out_dir -> writes 001.path / 001.body etc. in out_dir, prints count
+  local reply="$1" out_dir="$2"
+  mkdir -p "$out_dir" || return 1
+  rm -f "$out_dir"/*.path "$out_dir"/*.body 2>/dev/null || true
+  printf '%s\n' "$reply" | awk -v outdir="$out_dir" '
+    function clean_p(s) {
+      sub(/^[[:space:]]*(#+|\*\*|-|\*)?[[:space:]]*\*{0,2}(FILE|FILENAME|PATH|File|Filename|ACTION:[[:space:]]*(WRITE|CREATE|SAVE))\*{0,2}:?\*{0,2}[[:space:]]*/, "", s)
+      gsub(/[`"*'\''()]/, "", s)
+      sub(/[[:space:]].*$/, "", s)
+      sub(/[:,;.]$/, "", s)
+      sub(/^\.\//, "", s)
+      return s
+    }
+    function write_cur() {
+      if (pending_path != "" && length(cur_body) > 0) {
+        idx++
+        pf = sprintf("%s/%03d.path", outdir, idx)
+        bf = sprintf("%s/%03d.body", outdir, idx)
+        printf "%s\n", pending_path > pf
+        close(pf)
+        printf "%s", cur_body > bf
+        close(bf)
+      }
+      cur_body = ""
+    }
+    {
+      t = $0
+      sub(/^[[:space:]]+/, "", t)
+    }
+    !in_blk && (t ~ /^(#+[[:space:]]*)?\*{0,2}(FILE|FILENAME|PATH|File|Filename)\*{0,2}:?\*{0,2}[[:space:]]+/ || t ~ /^ACTION:[[:space:]]*(WRITE|CREATE|SAVE)[[:space:]]+/) {
+      p = clean_p(t)
+      if (p != "") pending_path = p
+      next
+    }
+    !in_blk && t ~ /^#+[[:space:]]*`?[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}`?:?$/ {
+      p = t
+      sub(/^#+[[:space:]]*/, "", p)
+      gsub(/[`":]/, "", p)
+      sub(/^\.\//, "", p)
+      if (p != "") pending_path = p
+      next
+    }
+    t ~ /^```/ {
+      if (!in_blk) {
+        in_blk = 1
+        cur_body = ""
+      } else {
+        in_blk = 0
+        write_cur()
+        pending_path = ""
+      }
+      next
+    }
+    in_blk { cur_body = cur_body $0 "\n" }
+    END {
+      if (in_blk) write_cur()
+      print idx + 0
     }
   '
 }
@@ -4454,8 +4556,10 @@ _tx_ai_fix() {
 }
 
 _tx_ai_write_file() {
-  local path="$1" content="$2" auto_yes="${3:-0}"
+  local path content="${2:-}" auto_yes="${3:-0}"
+  path=$(_tx_ai_clean_path "$1")
   [[ -n $path ]] || { _tx_err "missing file path"; return 1; }
+  [[ "$content" == *$'\n' ]] || content+=$'\n'
   local parent="${path%/*}"
   if [[ -f "$path" ]]; then
     printf '%s[diff]%s %s\n' "$TX_CA" "$TX_CX" "$path"
@@ -4466,20 +4570,72 @@ _tx_ai_write_file() {
     printf '%s[new file]%s %s (%d lines)\n' "$TX_CA" "$TX_CX" "$path" "$(printf '%s' "$content" | wc -l | tr -d ' ')"
   fi
   if (( ! auto_yes )) && ! _tx_ai_should_auto write "$path" && [[ -t 0 && -t 1 ]]; then
-    printf '%sWrite %s? [y/N] %s' "$TX_CY" "$path" "$TX_CX"
+    printf '%sWrite %s? [Y/n]: %s' "$TX_CY" "$path" "$TX_CX"
     local ans=""
-    read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+    read -r -n 1 ans </dev/tty 2>/dev/null || ans="y"
     echo
-    [[ "$ans" == y || "$ans" == Y ]] || { _tx_warn "skipped ${path}"; return 1; }
+    [[ "$ans" == n || "$ans" == N ]] && { _tx_warn "skipped ${path}"; return 1; }
   fi
   [[ "$parent" != "$path" && -n $parent ]] && mkdir -p "$parent"
   [[ -f "$path" ]] && cp -p -- "$path" "${path}.bak"
   printf '%s' "$content" > "$path" || return 1
-  if [[ "$content" == \#!* ]]; then
+  if [[ "$content" == \#!* || "$path" == *.sh ]]; then
     chmod +x "$path" 2>/dev/null || true
   fi
   _tx_say "wrote ${path}$([[ -f "${path}.bak" ]] && echo " (backup: ${path}.bak)")"
   return 0
+}
+
+_tx_ai_apply_files() {
+  # Saves all extracted NNN.path / NNN.body pairs in out_dir. Args: out_dir [auto_yes]
+  local out_dir="$1" auto_yes="${2:-0}"
+  local pf bf fpath fbody saved=0
+  local -a saved_paths=()
+  for pf in "$out_dir"/*.path; do
+    [[ -f "$pf" ]] || continue
+    bf="${pf%.path}.body"
+    [[ -s "$bf" ]] || continue
+    fpath=$(cat "$pf" 2>/dev/null)
+    fpath=$(_tx_ai_clean_path "$fpath")
+    [[ -n $fpath ]] || continue
+    fbody=$(cat "$bf")
+    printf '\n%s=== FILE: %s ===%s\n' "$TX_C2" "$fpath" "$TX_CX"
+    printf '%s\n' "$fbody" | head -n 40 | awk '{printf "%3d | %s\n", NR, $0}'
+    local nlines; nlines=$(wc -l < "$bf" | tr -d ' ')
+    (( nlines > 40 )) && printf '%s... (%d more lines)%s\n' "$TX_CD" $(( nlines - 40 )) "$TX_CX"
+
+    if (( auto_yes )) || _tx_ai_should_auto write "$fpath" || [[ ! -t 0 || ! -t 1 ]]; then
+      _tx_ai_write_file "$fpath" "$fbody" 1 && { saved=$(( saved + 1 )); saved_paths+=("$fpath"); }
+    else
+      printf '\n%sAction for %s: [Y=save / r=save & run / e=rename / n=skip]: %s' "$TX_CY" "$fpath" "$TX_CX"
+      local act=""
+      read -r -n 1 act </dev/tty 2>/dev/null || act="y"
+      echo
+      case "$act" in
+        e|E)
+          printf '%sPath: %s' "$TX_CA" "$TX_CX"
+          read -r -e -i "$fpath" fpath </dev/tty 2>/dev/null || read -r fpath </dev/tty
+          fpath=$(_tx_ai_clean_path "$fpath")
+          [[ -n $fpath ]] && _tx_ai_write_file "$fpath" "$fbody" 1 && { saved=$(( saved + 1 )); saved_paths+=("$fpath"); }
+          ;;
+        r|R)
+          if _tx_ai_write_file "$fpath" "$fbody" 1; then
+            saved=$(( saved + 1 ))
+            saved_paths+=("$fpath")
+            _tx_ai_run_file "$fpath"
+          fi
+          ;;
+        n|N)
+          _tx_warn "skipped ${fpath}"
+          ;;
+        *)
+          _tx_ai_write_file "$fpath" "$fbody" 1 && { saved=$(( saved + 1 )); saved_paths+=("$fpath"); }
+          ;;
+      esac
+    fi
+  done
+  (( saved > 0 )) && return 0
+  return 1
 }
 
 _tx_ai_run_file() {
@@ -4500,41 +4656,48 @@ _tx_ai_make() {
   local first="${1:-}" target="" desc=""
   [[ -n $first ]] || { _tx_err "usage: /ai make <filename|description> [requirements]"; return 1; }
   if [[ "$first" == *.* || "$first" == */* ]]; then
-    target="$first"; shift
+    target=$(_tx_ai_clean_path "$first"); shift
     desc="${*:-Create a clean, working ${target} script/file.}"
   else
     desc="$*"
   fi
-  local sys="You are an expert developer on ${TX_DEVICE}. Output line 1 as 'FILE: <filename>' (use ${target:-a suitable concise filename}) followed by the COMPLETE working code inside a single \`\`\` code block with closing \`\`\`. Keep comments/docstrings minimal so the full code fits cleanly. No extra prose."
+  local sys="You are an expert developer on ${TX_DEVICE}. For each file to create, output 'FILE: <filename>' (${target:+use path: $target}) immediately followed by the COMPLETE working code inside a \`\`\` code block with closing \`\`\`. Keep comments minimal so the full code never truncates. No extra prose."
   local reply _TX_AI_HINT_MODE="code"
   reply=$(_tx_ai_call "$sys" "user" "Create file ${target:+(path: $target) }for: ${desc}") || return 1
-  if [[ -z $target ]]; then
-    target=$(printf '%s\n' "$reply" | awk '/^FILE:/{sub(/^FILE:[[:space:]]*/,""); print $1; exit}')
-    [[ -z $target ]] && target="script.sh"
-  fi
-  local code
-  code=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
-  [[ -n $code ]] || { printf '%s\n' "$reply" | _tx_ai_render; _tx_err "no code block returned"; return 1; }
 
-  printf '\n%s=== GENERATED: %s ===%s\n' "$TX_C2" "$target" "$TX_CX"
-  printf '%s\n' "$code" | awk '{printf "%3d | %s\n", NR, $0}'
-  if _tx_ai_should_auto write "$target"; then
-    _tx_ai_write_file "$target" "$code" 1
-    return $?
+  local fdir="$TX_HOME/.mkfiles.$$"
+  local fcnt
+  fcnt=$(_tx_ai_extract_files "$reply" "$fdir")
+  if (( fcnt == 0 )); then
+    local code
+    code=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
+    if [[ -z $code ]]; then
+      printf '%s\n' "$reply" | _tx_ai_render
+      rm -rf "$fdir"
+      _tx_err "no file/code block returned"
+      return 1
+    fi
+    if [[ -z $target ]]; then
+      target=$(printf '%s\n' "$reply" | awk '/FILE:/{sub(/.*FILE:[[:space:]]*/,""); print $1; exit}')
+      target=$(_tx_ai_clean_path "$target")
+      if [[ -z $target ]]; then
+        local lang ext
+        lang=$(printf '%s\n' "$reply" | awk '/^[[:space:]]*```[A-Za-z0-9]+/{sub(/^[[:space:]]*```/,""); print $1; exit}')
+        ext=$(_tx_ai_guess_ext "$lang")
+        target="script.${ext}"
+      fi
+    fi
+    mkdir -p "$fdir"
+    printf '%s\n' "$target" > "$fdir/001.path"
+    printf '%s' "$code" > "$fdir/001.body"
+  elif [[ -n $target && "$fcnt" -eq 1 ]]; then
+    printf '%s\n' "$target" > "$fdir/001.path"
   fi
-  if [[ -t 0 && -t 1 ]]; then
-    printf '\n%sAction: [s] Save  [r] Save & Run  [n] Cancel : %s' "$TX_CY" "$TX_CX"
-    local act=""
-    read -r -n 1 act </dev/tty 2>/dev/null || act="n"
-    echo
-    case "$act" in
-      s|S) _tx_ai_write_file "$target" "$code" 1 ;;
-      r|R) _tx_ai_write_file "$target" "$code" 1 && _tx_ai_run_file "$target" ;;
-      *)   _tx_warn "cancelled" ;;
-    esac
-  else
-    printf '%s\n' "$code"
-  fi
+
+  _tx_ai_apply_files "$fdir" 0
+  local rc=$?
+  rm -rf "$fdir"
+  return "$rc"
 }
 
 _tx_ai_edit() {
@@ -4644,6 +4807,8 @@ Inspect existing files before editing, verify after changes, and finish with ACT
 
     action=$(printf '%s\n' "$reply" | awk '/^ACTION:/{sub(/^ACTION:[[:space:]]*/,""); print $1; exit}')
     arg=$(printf '%s\n' "$reply" | awk '/^ACTION:/{sub(/^ACTION:[[:space:]]*[^[:space:]]+[[:space:]]*/,""); print; exit}')
+    action="${action^^}"
+    action="${action%:}"
 
     case "$action" in
       DONE)
@@ -4683,6 +4848,7 @@ Inspect existing files before editing, verify after changes, and finish with ACT
       READ)
         local rfile rrange=""
         read -r rfile rrange <<< "$arg"
+        rfile=$(_tx_ai_clean_path "$rfile")
         printf '%s[read]%s %s %s\n' "$TX_CA" "$TX_CX" "$rfile" "$rrange"
         if [[ "$rrange" =~ ^[0-9]+:[0-9]+$ && -f "$rfile" ]]; then
           local sline="${rrange%:*}" eline="${rrange#*:}"
@@ -4696,6 +4862,7 @@ Inspect existing files before editing, verify after changes, and finish with ACT
         obs="Saved to project memory: ${arg}"
         ;;
       PATCH)
+        arg=$(_tx_ai_clean_path "$arg")
         body=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
         if [[ -z $body ]]; then
           obs="ERROR: ACTION: PATCH requires a code block."
@@ -4703,18 +4870,19 @@ Inspect existing files before editing, verify after changes, and finish with ACT
           _tx_ai_agent_patch "$arg" "$body" 1 && obs="Patched ${arg} successfully." || obs="Patch failed (OLD block not found in ${arg}; use ACTION: WRITE)."
         else
           printf '%s[agent patch]%s %s\n%s\n' "$TX_CA" "$TX_CX" "$arg" "${body:0:600}"
-          printf '%sApprove? [y] Patch  [a] Auto-all  [n] Skip : %s' "$TX_CY" "$TX_CX"
-          read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+          printf '%sApprove? [Y=patch / a=auto-all / n=skip]: %s' "$TX_CY" "$TX_CX"
+          read -r -n 1 ans </dev/tty 2>/dev/null || ans="y"
           echo
           if [[ "$ans" == a || "$ans" == A ]]; then auto=1; ans="y"; fi
-          if [[ "$ans" == y || "$ans" == Y ]]; then
+          if [[ "$ans" != n && "$ans" != N ]]; then
             _tx_ai_agent_patch "$arg" "$body" 1 && obs="Patched ${arg} successfully." || obs="Patch failed (OLD block not found in ${arg}; use ACTION: WRITE)."
           else
             obs="User skipped patching ${arg}."
           fi
         fi
         ;;
-      WRITE)
+      WRITE|CREATE|SAVE)
+        arg=$(_tx_ai_clean_path "$arg")
         body=$(printf '%s\n' "$reply" | _tx_ai_extract_code_block)
         if [[ -z $body ]]; then
           obs="ERROR: ACTION: WRITE requires a code block."
@@ -4725,11 +4893,11 @@ Inspect existing files before editing, verify after changes, and finish with ACT
           if [[ -f "$arg" ]] && command -v diff >/dev/null 2>&1; then
             printf '%s' "$body" | diff -u "$arg" - 2>/dev/null | head -n 30 || true
           fi
-          printf '%sApprove? [y] Write  [a] Auto-all  [n] Skip : %s' "$TX_CY" "$TX_CX"
-          read -r -n 1 ans </dev/tty 2>/dev/null || ans="n"
+          printf '%sApprove? [Y=write / a=auto-all / n=skip]: %s' "$TX_CY" "$TX_CX"
+          read -r -n 1 ans </dev/tty 2>/dev/null || ans="y"
           echo
           if [[ "$ans" == a || "$ans" == A ]]; then auto=1; ans="y"; fi
-          if [[ "$ans" == y || "$ans" == Y ]]; then
+          if [[ "$ans" != n && "$ans" != N ]]; then
             _tx_ai_write_file "$arg" "$body" 1 && obs="Wrote ${arg} successfully." || obs="Failed to write ${arg}."
           else
             obs="User skipped writing ${arg}."
@@ -4772,8 +4940,20 @@ Inspect existing files before editing, verify after changes, and finish with ACT
         fi
         ;;
       *)
-        printf '%s\n' "$reply" | _tx_ai_render
-        return 0
+        local afdir="$TX_HOME/.agfiles.$$" afcnt=0
+        afcnt=$(_tx_ai_extract_files "$reply" "$afdir")
+        if (( afcnt > 0 )); then
+          if _tx_ai_apply_files "$afdir" "$auto"; then
+            obs="Wrote extracted file(s) successfully. Verify if needed or finish with ACTION: DONE."
+          else
+            obs="User skipped writing extracted file(s)."
+          fi
+          rm -rf "$afdir"
+        else
+          rm -rf "$afdir"
+          printf '%s\n' "$reply" | _tx_ai_render
+          return 0
+        fi
         ;;
     esac
     hist+=("user" "Observation:"$'\n'"${obs}")
@@ -4891,7 +5071,7 @@ _tx_ai_chat() {
   printf '%sCommands: /mode agent|chat  /agent  /make  /edit  /run  /read  /grep  /auto  /skill  /compact  /help  /exit%s\n\n' "$TX_CD" "$TX_CX"
   local -a hist=()
   local -a last_cmds=()
-  local line reply c
+  local last_file_reply="" line reply c
   while true; do
     printf '%s[%s] you > %s' "$TX_C2" "$mode" "$TX_CX"
     IFS= read -r line || { echo; break; }
@@ -5021,6 +5201,21 @@ _tx_ai_chat() {
         _tx_ai_make ${line#/make }
         continue
         ;;
+      /write)
+        if [[ -z $last_file_reply ]]; then
+          _tx_warn "no FILE: blocks in last AI reply (usage: /write <file> <desc>)"
+        else
+          local cfdir="$TX_HOME/.chatfiles.$$"
+          _tx_ai_extract_files "$last_file_reply" "$cfdir" >/dev/null
+          _tx_ai_apply_files "$cfdir" 0
+          rm -rf "$cfdir"
+        fi
+        continue
+        ;;
+      /write\ *)
+        _tx_ai_make ${line#/write }
+        continue
+        ;;
       /edit\ *)
         _tx_ai_edit ${line#/edit }
         continue
@@ -5074,7 +5269,8 @@ _tx_ai_chat() {
       /help)
         echo "  /mode agent|chat switch between continuous AGY agent mode and chat"
         echo "  /agent <goal>    run multi-step CLI agent (ls, grep, read, write, patch, run)"
-        echo "  /make <f> <desc> create a new file/script"
+        echo "  /make <f> <desc> create & save file(s) (also: /write <f> <desc>)"
+        echo "  /write           save FILE: blocks from the last AI reply"
         echo "  /edit <f> <task> edit an existing file"
         echo "  /read <file>     load a file into chat context"
         echo "  /grep <pattern>  search codebase"
@@ -5108,6 +5304,19 @@ _tx_ai_chat() {
     done < <(printf '%s\n' "$reply" | _tx_ai_extract_cmds)
     printf '\n%sai >%s\n' "$TX_CA" "$TX_CX"
     printf '%s\n' "$reply" | _tx_ai_render
+    local cfdir="$TX_HOME/.chatfiles.$$" cfcnt=0
+    cfcnt=$(_tx_ai_extract_files "$reply" "$cfdir")
+    if (( cfcnt > 0 )); then
+      last_file_reply="$reply"
+      if _tx_ai_should_auto write "chat"; then
+        _tx_ai_apply_files "$cfdir" 1
+      else
+        printf '%s[tip: type /write to save %d generated file(s)]%s\n' "$TX_CD" "$cfcnt" "$TX_CX"
+      fi
+    else
+      last_file_reply=""
+    fi
+    rm -rf "$cfdir"
     (( ${#last_cmds[@]} > 0 )) && printf '%s[tip: type /run to execute suggested command(s)]%s\n' "$TX_CD" "$TX_CX"
     echo
   done
@@ -5129,7 +5338,7 @@ Usage: /ai [-y] [option | prompt]
   /ai [-y] <prompt>           One-shot question (-y = auto-approve commands)
   /ai auto <off|safe|on>      Persistent auto-approve mode (safe skips dangerous rm/dd/mkfs)
   /ai skill [...]             Install/manage AGY SKILL.md packs (also: aiskill)
-  /ai make <file> <desc>      Create a new file/script (Save or Save & Run)
+  /ai make|write <file> <d>   Create & save file(s) directly (Enter/Y=Save, r=Save&Run)
   /ai edit <file> <task>      Edit existing file with diff preview & .bak backup
   /ai agent [-y] <goal>       Full AGY/Claude CLI agent (ls, find, grep, read, write, patch, run, plan)
   /ai -c <task>               Generate one shell command and prompt before running
@@ -5304,7 +5513,7 @@ EOF
       _tx_ai_explain "$@"
       return $?
       ;;
-    make|new|create|gen)
+    make|write|new|create|gen)
       shift
       _tx_ai_make "$@"
       return $?
@@ -5354,6 +5563,14 @@ EOF
     local ans
     ans=$(_tx_ai_call "" "user" "$prompt") || return 1
     printf '%s\n' "$ans" | _tx_ai_render
+    local qfdir="$TX_HOME/.qfiles.$$" qfcnt=0
+    qfcnt=$(_tx_ai_extract_files "$ans" "$qfdir")
+    if (( qfcnt > 0 )); then
+      _tx_ai_apply_files "$qfdir" 0
+      rm -rf "$qfdir"
+      return $?
+    fi
+    rm -rf "$qfdir"
     if [[ -t 0 && -t 1 && -z $piped ]]; then
       local -a qcmds=()
       local qc
@@ -5555,7 +5772,7 @@ _tx_subcmd_complete() {
       ;;
     /ai|ai|txai)
       if (( COMP_CWORD == 1 )); then
-        words="cli make edit agent auto skill do run code check review fix explain diff commit project err route rotate models preset zen mood mem remember compact full config conf setup status show test get set reset -y -c cmd --help"
+        words="cli make write edit agent auto skill do run code check review fix explain diff commit project err route rotate models preset zen mood mem remember compact full config conf setup status show test get set reset -y -c cmd --help"
       elif [[ "$prev" == auto ]]; then
         words="off safe on status"
       elif [[ "$prev" == compact ]]; then
